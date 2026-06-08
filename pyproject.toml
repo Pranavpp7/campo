@@ -3,4 +3,6 @@ name = "fifa-project"
 version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "h11>=0.16.0",
+]
