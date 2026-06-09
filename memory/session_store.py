@@ -3,15 +3,9 @@ import uuid
 from datetime import datetime
 
 from dotenv import load_dotenv
-<<<<<<< HEAD
-from langchain_community.vectorstores import Qdrant
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain.schema import Document
-=======
 from langchain_qdrant import QdrantVectorStore as Qdrant
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
->>>>>>> 9f44d077fd9595e474f58893c62dc65d001e08b9
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
