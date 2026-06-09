@@ -2,12 +2,27 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from memory.session_store import cleanup_old_sessions
 import time
 
 load_dotenv()
 
 app = FastAPI(title="Campo API", version="1.0.0")
 
+# ── Scheduler ────────────────────────────────────────────────────────────────
+scheduler = AsyncIOScheduler()
+
+@app.on_event("startup")
+async def startup():
+    scheduler.add_job(cleanup_old_sessions, "interval", minutes=30)
+    scheduler.start()
+
+@app.on_event("shutdown")
+async def shutdown():
+    scheduler.shutdown()
+
+# ── CORS ─────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -15,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Schemas ---
+# ── Schemas ───────────────────────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     session_id: str
     message: str
@@ -26,7 +41,7 @@ class ChatResponse(BaseModel):
     trace_url: str | None
     latency_ms: int
 
-# --- Routes ---
+# ── Routes ────────────────────────────────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     start = time.time()
