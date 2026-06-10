@@ -7,7 +7,7 @@ from langchain_qdrant import QdrantVectorStore as Qdrant
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
+from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
 
 load_dotenv()
 
@@ -99,7 +99,7 @@ class LongTermMemory:
             self._store = Qdrant(
                 client=qdrant_client,
                 collection_name=LONG_TERM_COLLECTION,
-                embeddings=embeddings,
+                embedding=embeddings,
             )
         return self._store
 
@@ -117,8 +117,29 @@ class LongTermMemory:
                 ),
             )
 
+    def get_preferences(self, user_id: str, query: str, limit: int = 5) -> list[str]:
+        """Retrieve relevant preferences using semantic search."""
+        results = self._get_store().similarity_search(
+            query=query,
+            k=limit,
+            filter=Filter(
+                must=[
+                    FieldCondition(
+                        key="metadata.user_id",
+                        match=MatchValue(value=user_id),
+                    )
+                ]
+            ),
+        )
+        return [doc.page_content for doc in results]
+
     def save_preference(self, user_id: str, preference: str):
-        """Save a user preference. Connects to Qdrant on first call."""
+        """Save a user preference. Skips if a near-identical one already exists."""
+        existing = self.get_preferences(user_id, preference, limit=3)
+        for item in existing:
+            if item.lower().strip() == preference.lower().strip():
+                return  # exact duplicate, skip
+
         doc = Document(
             page_content=preference,
             metadata={
@@ -128,15 +149,6 @@ class LongTermMemory:
             },
         )
         self._get_store().add_documents([doc])
-
-    def get_preferences(self, user_id: str, query: str) -> list[str]:
-        """Retrieve relevant preferences using semantic search."""
-        results = self._get_store().similarity_search(
-            query=query,
-            k=5,
-            filter={"user_id": user_id},
-        )
-        return [doc.page_content for doc in results]
 
 # Singleton — one instance shared across the app
 long_term_memory = LongTermMemory()
