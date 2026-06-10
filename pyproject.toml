@@ -1,7 +1,7 @@
 [project]
-name = "fifa-project"
+name = "campo"
 version = "0.1.0"
-description = "Add your description here"
+description = "World Cup 2026 Multi-Agent Intelligence System"
 requires-python = ">=3.13"
 dependencies = [
     "apscheduler>=3.11.2",
@@ -16,10 +16,10 @@ dependencies = [
     "langchain-groq>=1.1.2",
     "langchain-huggingface>=1.2.2",
     "langchain-mcp-adapters>=0.2.2",
-    "langchain-openai>=1.2.2",
+    "langchain-openai>=0.3.0",
     "langchain-qdrant>=0.2.0",
-    "langgraph>=1.2.4",
     "langsmith>=0.8.11",
+    "langgraph>=1.2.4",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",
     "qdrant-client>=1.18.0",
@@ -30,4 +30,18 @@ dependencies = [
     "torch>=2.12.0",
     "transformers>=5.10.2",
     "uvicorn>=0.49.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "agents*",
+    "tools*",
+    "prompts*",
+    "memory*",
+    "llm*",
+    "qdrant*",
+    "evals*",
+    "api*",
+    "mcp_server*",
 ]
