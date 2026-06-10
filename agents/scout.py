@@ -6,12 +6,17 @@ from tools.football_data import get_wc_matches, get_team_squad, get_wc_standings
 from tools.mcp_client import get_search_tools
 from prompts.scout import SCOUT_PROMPT
 from memory.session_store import get_history, add_turn, set_context
+from tools.football_data import get_wc_matches, get_team_squad, get_wc_standings
+from tools.espn import get_live_scores, get_match_summary, get_team_news
 
 # ── Base tools (always available) ─────────────────────────────────────────────
 BASE_TOOLS = [
     get_wc_matches,
     get_team_squad,
     get_wc_standings,
+    get_live_scores,
+    get_match_summary,
+    get_team_news,
 ]
 
 # ── Agent factory (async — loads MCP tools at startup) ────────────────────────
