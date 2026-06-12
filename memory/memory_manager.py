@@ -1,14 +1,11 @@
 import os
-from datetime import datetime
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
-from llm.factory import get_llm
-from memory.session_store import long_term_memory
+from mem0 import AsyncMemory
 
 load_dotenv()
 
 # ── Personal signal keywords ──────────────────────────────────────────────────
-# If a message contains any of these, we check for extractable preferences.
+# If a message contains any of these, we pass it to mem0 for extraction.
 # This avoids unnecessary LLM calls on messages like "Is Mbappe fit?"
 PERSONAL_SIGNALS = [
     "i ", "i'm", "i am", "i run", "i work", "i own", "i live",
@@ -18,98 +15,82 @@ PERSONAL_SIGNALS = [
     "i care about", "i'm interested", "i follow",
 ]
 
-EXTRACTION_PROMPT = """You are a memory extraction assistant. 
-Your job is to identify facts about the user that would help personalize future responses.
+# ── mem0 config ────────────────────────────────────────────────────────────────
+MEM0_CONFIG = {
+    "vector_store": {
+        "provider": "qdrant",
+        "config": {
+            "collection_name": "campo_memories",
+            "embedding_model_dims": 384,
+            "host": os.getenv("QDRANT_HOST", "localhost"),
+            "port": int(os.getenv("QDRANT_PORT", 6333)),
+        },
+    },
+    "embedder": {
+        "provider": "huggingface",
+        "config": {
+            "model": "sentence-transformers/all-MiniLM-L6-v2",
+        },
+    },
+    "llm": {
+        "provider": "groq",
+        "config": {
+            "model": "llama-3.3-70b-versatile",
+            "api_key": os.getenv("GROQ_API_KEY"),
+            "temperature": 0.1,
+        },
+    },
+    "history_db_path": os.path.join(os.path.dirname(__file__), "mem0_history.db"),
+}
 
-Extract ONLY concrete, reusable facts about the user. Examples of what to extract:
-- "User runs a food truck near the Houston World Cup venue"
-- "User supports the France national team"
-- "User is flying from Dallas to attend USA games"
-- "User prefers value bets on underdogs"
-- "User is a sports journalist covering the World Cup"
-
-Do NOT extract:
-- Questions the user asked
-- General football opinions
-- One-time queries
-- Anything not about the user personally
-
-User message: {message}
-
-Respond with a JSON array of strings. Each string is one extractable fact.
-If nothing is worth saving, respond with an empty array: []
-Respond with JSON only, no other text.
-"""
+memory = AsyncMemory.from_config(MEM0_CONFIG)
 
 # ── Extraction ─────────────────────────────────────────────────────────────────
 
 def _has_personal_signal(message: str) -> bool:
-    """Quick keyword check before calling the LLM.
+    """Quick keyword check before calling mem0 (which itself calls an LLM).
     Returns True if the message likely contains personal information.
     """
     message_lower = message.lower()
     return any(signal in message_lower for signal in PERSONAL_SIGNALS)
 
 async def extract_and_save(user_id: str, message: str):
-    """Extract preferences from a user message and save to long term memory.
-    
-    Only calls the LLM if the message contains personal signals.
-    This keeps token usage minimal — most messages skip the LLM entirely.
-    
+    """Extract preferences from a user message and save via mem0.
+
+    Only calls mem0 if the message contains personal signals.
+    mem0 handles extraction, dedup, and conflict resolution internally
+    (decides ADD/UPDATE/DELETE/NONE per fact via its own LLM call).
+
     Args:
         user_id: Unique user identifier
         message: The user's message to check for extractable preferences
     """
-    # Step 1 — quick keyword check, no LLM needed
     if not _has_personal_signal(message):
         return
 
-    # Step 2 — call LLM to extract structured preferences
     try:
-        llm = get_llm()
-        prompt = EXTRACTION_PROMPT.format(message=message)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
-
-        # Parse JSON response
-        import json
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        
-        preferences = json.loads(raw.strip())
-
-        # Step 3 — save each extracted preference to Qdrant
-        for preference in preferences:
-            if isinstance(preference, str) and len(preference) > 10:
-                long_term_memory.save_preference(user_id, preference)
-
+        await memory.add(message, user_id=user_id)
     except Exception as e:
         # Memory extraction failing should never crash the main flow
         print(f"Memory extraction error (non-fatal): {e}")
 
 # ── Loading ────────────────────────────────────────────────────────────────────
 
-def load_memories(user_id: str, query: str) -> str:
+async def load_memories(user_id: str, query: str) -> str:
     try:
-        preferences = long_term_memory.get_preferences(user_id, query)
-        if not preferences:
+        result = await memory.search(
+            query=query,
+            filters={"user_id": user_id},
+            top_k=5,
+        )
+        results = result.get("results", [])
+        if not results:
             return ""
-        
-        # Dedupe while preserving order
-        seen = set()
-        unique_prefs = []
-        for pref in preferences:
-            if pref not in seen:
-                seen.add(pref)
-                unique_prefs.append(pref)
-        
+
         lines = ["User context from previous conversations:"]
-        for pref in unique_prefs:
-            lines.append(f"- {pref}")
-        
+        for r in results:
+            lines.append(f"- {r['memory']}")
+
         return "\n".join(lines)
     except Exception as e:
         print(f"Memory loading error (non-fatal): {e}")
@@ -117,18 +98,18 @@ def load_memories(user_id: str, query: str) -> str:
 
 # ── Injection ──────────────────────────────────────────────────────────────────
 
-def build_context_message(user_id: str, query: str) -> str | None:
+async def build_context_message(user_id: str, query: str) -> str | None:
     """Build a context message to inject into agent conversations.
-    
+
     Loads relevant memories and formats them as a system message
     the agent sees before the user's actual question.
-    
+
     Returns None if no relevant memories exist.
     """
-    memories = load_memories(user_id, query)
+    memories = await load_memories(user_id, query)
     if not memories:
         return None
-    
+
     return f"""
 {memories}
 

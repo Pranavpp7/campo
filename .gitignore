@@ -20,3 +20,6 @@ Thumbs.db
 
 # Qdrant local data
 qdrant_storage/
+
+storage/
+memory/mem0_history.db

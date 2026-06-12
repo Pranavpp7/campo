@@ -48,11 +48,11 @@ async def run_scout(task: str, session_id: str, user_id: str = "default") -> dic
     try:
         agent = await _get_agent()
 
-        history = get_history(session_id)
+        history = await get_history(session_id)
         messages = history + [{"role": "user", "content": task}]
 
         # Inject long-term memory context if relevant
-        memory_context = build_context_message(user_id, task)
+        memory_context = await build_context_message(user_id, task)
         if memory_context:
             messages = [{"role": "system", "content": memory_context}] + messages
 
@@ -61,9 +61,9 @@ async def run_scout(task: str, session_id: str, user_id: str = "default") -> dic
         final_message = result["messages"][-1]
         response_text = final_message.content
 
-        add_turn(session_id, "user", task)
-        add_turn(session_id, "assistant", response_text)
-        set_context(session_id, "scout_result", response_text)
+        await add_turn(session_id, "user", task)
+        await add_turn(session_id, "assistant", response_text)
+        await set_context(session_id, "scout_result", response_text)
 
         # Extract any new long-term preferences from this turn
         await extract_and_save(user_id, task)

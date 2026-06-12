@@ -1,47 +1,53 @@
 import os
-import uuid
+import json
 from datetime import datetime
 
 from dotenv import load_dotenv
-from langchain_qdrant import QdrantVectorStore as Qdrant
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.documents import Document
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, Filter, FieldCondition, MatchValue
+import redis.asyncio as redis
 
 load_dotenv()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 MAX_HISTORY_TURNS = 20
-LONG_TERM_COLLECTION = "user_profiles"
+SESSION_TTL_SECONDS = 7200  # 2 hours, sliding — refreshed on every write
 
-# ── Embeddings ────────────────────────────────────────────────────────────────
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
+# ── Redis client (shared, async) ──────────────────────────────────────────────
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    decode_responses=True,  # so we get str back, not bytes
 )
 
-# ── Qdrant client (shared) ────────────────────────────────────────────────────
-qdrant_client = QdrantClient(
-    host=os.getenv("QDRANT_HOST", "localhost"),
-    port=int(os.getenv("QDRANT_PORT", 6333)),
-)
+# ── Short Term Memory (Redis-backed) ─────────────────────────────────────────
 
-# ── Short Term Memory (Pure Python) ──────────────────────────────────────────
-_sessions: dict = {}
+def _session_key(session_id: str) -> str:
+    return f"session:{session_id}"
 
-def get_session(session_id: str) -> dict:
-    """Get or create a session."""
-    if session_id not in _sessions:
-        _sessions[session_id] = {
+async def get_session(session_id: str) -> dict:
+    """Get a session dict, or a fresh default if it doesn't exist yet.
+    Note: a fresh default is NOT written to Redis here — it's only
+    persisted once something calls add_turn/set_context.
+    """
+    raw = await redis_client.get(_session_key(session_id))
+    if raw is None:
+        return {
             "history": [],
             "context": {},
             "created_at": datetime.utcnow().isoformat(),
         }
-    return _sessions[session_id]
+    return json.loads(raw)
 
-def add_turn(session_id: str, role: str, content: str):
+async def _save_session(session_id: str, session: dict):
+    """Write the session back, refreshing its TTL (sliding expiration)."""
+    await redis_client.set(
+        _session_key(session_id),
+        json.dumps(session),
+        ex=SESSION_TTL_SECONDS,
+    )
+
+async def add_turn(session_id: str, role: str, content: str):
     """Add a conversation turn. Trims to MAX_HISTORY_TURNS."""
-    session = get_session(session_id)
+    session = await get_session(session_id)
     session["history"].append({
         "role": role,
         "content": content,
@@ -49,106 +55,29 @@ def add_turn(session_id: str, role: str, content: str):
     })
     if len(session["history"]) > MAX_HISTORY_TURNS:
         session["history"] = session["history"][-MAX_HISTORY_TURNS:]
+    await _save_session(session_id, session)
 
-def get_history(session_id: str) -> list[dict]:
+async def get_history(session_id: str) -> list[dict]:
     """Get history as {role, content} list — passed directly to LLM."""
-    session = get_session(session_id)
+    session = await get_session(session_id)
     return [
         {"role": t["role"], "content": t["content"]}
         for t in session["history"]
     ]
 
-def set_context(session_id: str, key: str, value):
+async def set_context(session_id: str, key: str, value):
     """Store cross-agent context.
-    Example: Scout fetches France form → BettingEdge reads it without re-fetching.
+    Example: Scout fetches France form → MatchInsight reads it without re-fetching.
     """
-    get_session(session_id)["context"][key] = value
+    session = await get_session(session_id)
+    session["context"][key] = value
+    await _save_session(session_id, session)
 
-def get_context(session_id: str, key: str):
+async def get_context(session_id: str, key: str):
     """Read cross-agent context. Returns None if not set."""
-    return get_session(session_id)["context"].get(key)
+    session = await get_session(session_id)
+    return session["context"].get(key)
 
-def clear_session(session_id: str):
+async def clear_session(session_id: str):
     """Clear a session entirely."""
-    if session_id in _sessions:
-        del _sessions[session_id]
-
-async def cleanup_old_sessions(max_age_hours: int = 2):
-    """Delete sessions inactive for more than max_age_hours.
-    Scheduled to run every 30 minutes via apscheduler in main.py.
-    """
-    now = datetime.utcnow()
-    to_delete = []
-    for session_id, session in _sessions.items():
-        created = datetime.fromisoformat(session["created_at"])
-        age_hours = (now - created).seconds / 3600
-        if age_hours > max_age_hours:
-            to_delete.append(session_id)
-    for session_id in to_delete:
-        del _sessions[session_id]
-
-# ── Long Term Memory (LangChain + Qdrant) ─────────────────────────────────────
-class LongTermMemory:
-    def __init__(self):
-        self._store = None  # lazy — don't connect until first use
-
-    def _get_store(self):
-        """Connect to Qdrant on first use, not at import time."""
-        if self._store is None:
-            self._ensure_collection()
-            self._store = Qdrant(
-                client=qdrant_client,
-                collection_name=LONG_TERM_COLLECTION,
-                embedding=embeddings,
-            )
-        return self._store
-
-    def _ensure_collection(self):
-        """Create collection if it doesn't exist."""
-        existing = [
-            c.name for c in qdrant_client.get_collections().collections
-        ]
-        if LONG_TERM_COLLECTION not in existing:
-            qdrant_client.create_collection(
-                collection_name=LONG_TERM_COLLECTION,
-                vectors_config=VectorParams(
-                    size=384,
-                    distance=Distance.COSINE,
-                ),
-            )
-
-    def get_preferences(self, user_id: str, query: str, limit: int = 5) -> list[str]:
-        """Retrieve relevant preferences using semantic search."""
-        results = self._get_store().similarity_search(
-            query=query,
-            k=limit,
-            filter=Filter(
-                must=[
-                    FieldCondition(
-                        key="metadata.user_id",
-                        match=MatchValue(value=user_id),
-                    )
-                ]
-            ),
-        )
-        return [doc.page_content for doc in results]
-
-    def save_preference(self, user_id: str, preference: str):
-        """Save a user preference. Skips if a near-identical one already exists."""
-        existing = self.get_preferences(user_id, preference, limit=3)
-        for item in existing:
-            if item.lower().strip() == preference.lower().strip():
-                return  # exact duplicate, skip
-
-        doc = Document(
-            page_content=preference,
-            metadata={
-                "user_id": user_id,
-                "saved_at": datetime.utcnow().isoformat(),
-                "id": str(uuid.uuid4()),
-            },
-        )
-        self._get_store().add_documents([doc])
-
-# Singleton — one instance shared across the app
-long_term_memory = LongTermMemory()
+    await redis_client.delete(_session_key(session_id))
