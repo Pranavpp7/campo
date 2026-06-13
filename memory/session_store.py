@@ -67,7 +67,8 @@ async def get_history(session_id: str) -> list[dict]:
 
 async def set_context(session_id: str, key: str, value):
     """Store cross-agent context.
-    Example: Scout fetches France form → MatchInsight reads it without re-fetching.
+    Example: Scout fetches France form → Logistics or LocalPulse reads it
+    without re-fetching.
     """
     session = await get_session(session_id)
     session["context"][key] = value
