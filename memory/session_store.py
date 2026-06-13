@@ -1,6 +1,6 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import redis.asyncio as redis
@@ -15,70 +15,61 @@ SESSION_TTL_SECONDS = 7200  # 2 hours, sliding — refreshed on every write
 redis_client = redis.Redis(
     host=os.getenv("REDIS_HOST", "localhost"),
     port=int(os.getenv("REDIS_PORT", 6379)),
-    decode_responses=True,  # so we get str back, not bytes
+    decode_responses=True,
 )
 
 # ── Short Term Memory (Redis-backed) ─────────────────────────────────────────
+#
+# Each session is split across two Redis keys rather than one JSON blob, so
+# that concurrent agents writing to the same session_id (e.g. the orchestrator
+# dispatching Scout and Logistics in parallel) don't clobber each other via a
+# read-modify-write race:
+#   - session:{id}:history -> Redis List (RPUSH per turn, atomic append)
+#   - session:{id}:context -> Redis Hash (HSET per key, atomic per-field write)
 
-def _session_key(session_id: str) -> str:
-    return f"session:{session_id}"
+def _history_key(session_id: str) -> str:
+    return f"session:{session_id}:history"
 
-async def get_session(session_id: str) -> dict:
-    """Get a session dict, or a fresh default if it doesn't exist yet.
-    Note: a fresh default is NOT written to Redis here — it's only
-    persisted once something calls add_turn/set_context.
-    """
-    raw = await redis_client.get(_session_key(session_id))
-    if raw is None:
-        return {
-            "history": [],
-            "context": {},
-            "created_at": datetime.utcnow().isoformat(),
-        }
-    return json.loads(raw)
-
-async def _save_session(session_id: str, session: dict):
-    """Write the session back, refreshing its TTL (sliding expiration)."""
-    await redis_client.set(
-        _session_key(session_id),
-        json.dumps(session),
-        ex=SESSION_TTL_SECONDS,
-    )
+def _context_key(session_id: str) -> str:
+    return f"session:{session_id}:context"
 
 async def add_turn(session_id: str, role: str, content: str):
     """Add a conversation turn. Trims to MAX_HISTORY_TURNS."""
-    session = await get_session(session_id)
-    session["history"].append({
+    key = _history_key(session_id)
+    turn = json.dumps({
         "role": role,
         "content": content,
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
     })
-    if len(session["history"]) > MAX_HISTORY_TURNS:
-        session["history"] = session["history"][-MAX_HISTORY_TURNS:]
-    await _save_session(session_id, session)
+    await redis_client.rpush(key, turn)
+    await redis_client.ltrim(key, -MAX_HISTORY_TURNS, -1)
+    await redis_client.expire(key, SESSION_TTL_SECONDS)
 
 async def get_history(session_id: str) -> list[dict]:
     """Get history as {role, content} list — passed directly to LLM."""
-    session = await get_session(session_id)
-    return [
-        {"role": t["role"], "content": t["content"]}
-        for t in session["history"]
-    ]
+    key = _history_key(session_id)
+    raw_turns = await redis_client.lrange(key, 0, -1)
+    history = []
+    for raw in raw_turns:
+        turn = json.loads(raw)
+        history.append({"role": turn["role"], "content": turn["content"]})
+    return history
 
 async def set_context(session_id: str, key: str, value):
     """Store cross-agent context.
     Example: Scout fetches France form → Logistics or LocalPulse reads it
     without re-fetching.
     """
-    session = await get_session(session_id)
-    session["context"][key] = value
-    await _save_session(session_id, session)
+    redis_key = _context_key(session_id)
+    await redis_client.hset(redis_key, key, json.dumps(value))
+    await redis_client.expire(redis_key, SESSION_TTL_SECONDS)
 
 async def get_context(session_id: str, key: str):
     """Read cross-agent context. Returns None if not set."""
-    session = await get_session(session_id)
-    return session["context"].get(key)
+    redis_key = _context_key(session_id)
+    raw = await redis_client.hget(redis_key, key)
+    return json.loads(raw) if raw is not None else None
 
 async def clear_session(session_id: str):
-    """Clear a session entirely."""
-    await redis_client.delete(_session_key(session_id))
+    """Clear a session entirely (both history and context)."""
+    await redis_client.delete(_history_key(session_id), _context_key(session_id))
