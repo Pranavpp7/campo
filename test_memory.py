@@ -1,10 +1,10 @@
 import asyncio
-from agents.logistics import run_logistics
+from agents.localpulse import run_localpulse
 
 async def main():
-    result = await run_logistics(
-        task="I'm flying into Dallas for the Morocco vs Brazil match on June 13. What should I expect and where should I stay?",
-        session_id="test-logistics-1",
+    result = await run_localpulse(
+        task="I run a bar near AT&T Stadium in Dallas. What should I expect around the Brazil vs Morocco match on June 13?",
+        session_id="test-localpulse-1",
         user_id="test-user-1",
     )
     print("RESULT:", result["result"])
