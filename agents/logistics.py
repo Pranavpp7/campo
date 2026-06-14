@@ -6,7 +6,7 @@ from tools.weather import get_venue_weather
 from tools.logistics import calculate_venue_distance
 from tools.mcp_client import get_search_tools
 from prompts.logistics import LOGISTICS_PROMPT
-from memory.session_store import get_history, add_turn, set_context
+from memory.session_store import get_history, add_turn, set_context, get_context
 from memory.memory_manager import build_context_message, extract_and_save
 
 BASE_TOOLS = [
@@ -49,6 +49,26 @@ async def run_logistics(task: str, session_id: str, user_id: str = "default") ->
         history = await get_history(session_id)
         messages = history + [{"role": "user", "content": task}]
 
+        history = await get_history(session_id)
+        messages = history + [{"role": "user", "content": task}]
+
+        # Inject Scout's findings from this session, if available
+        scout_context = await get_context(session_id, "scout_result")
+        if scout_context:
+            scout_message = (
+                "Relevant context from Scout (match intelligence) earlier in "
+                "this session:\n\n"
+                f"{scout_context}\n\n"
+                "Use this information where relevant (e.g. injury news or "
+                "match details that affect your planning/recommendations). "
+                "Don't repeat it verbatim — incorporate it naturally."
+            )
+            messages = [{"role": "system", "content": scout_message}] + messages
+
+        # Inject long-term memory context if relevant
+        memory_context = await build_context_message(user_id, task)
+        if memory_context:
+            messages = [{"role": "system", "content": memory_context}] + messages
         memory_context = await build_context_message(user_id, task)
         if memory_context:
             messages = [{"role": "system", "content": memory_context}] + messages

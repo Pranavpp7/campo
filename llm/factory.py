@@ -36,3 +36,20 @@ def get_llm():
     primary = _make_groq()
     fallback = _make_openrouter()
     return primary.with_fallbacks([fallback])
+
+# ── Classifier LLM (Groq, lightweight) ────────────────────────────────────────
+CLASSIFIER_MODEL_NAME = "llama-3.1-8b-instant"
+
+def get_classifier_llm() -> ChatGroq:
+    """Returns a fast, cheap Groq model for lightweight tasks like intent
+    classification.
+
+    No fallback chain here — classify_intent() already has its own graceful
+    default (["scout"]) if this call fails, so the added complexity of a
+    fallback model isn't needed for a low-stakes, frequently-called task.
+    """
+    return ChatGroq(
+        model=CLASSIFIER_MODEL_NAME,
+        temperature=0,
+        api_key=os.getenv("GROQ_API_KEY"),
+    )
