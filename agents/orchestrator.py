@@ -12,7 +12,7 @@ from agents.localpulse import run_localpulse
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 VALID_AGENTS = {"scout", "logistics", "localpulse"}
-AGENT_TIMEOUT_SECONDS = 15
+AGENT_TIMEOUT_SECONDS = 60
 
 AGENT_RUNNERS = {
     "scout": run_scout,
@@ -224,11 +224,7 @@ async def run_orchestrator(
     session_id: str,
     user_id: str = "default",
 ) -> dict:
-    """Entry point for the orchestrator — called by /chat.
-
-    Returns a dict compatible with ChatResponse:
-    {response, agents_used, error, agent_results}
-    """
+    """Entry point for the orchestrator — called by /chat."""
     try:
         initial_state = OrchestratorState(
             message=message,
@@ -238,10 +234,10 @@ async def run_orchestrator(
         final_state = await _graph.ainvoke(initial_state)
 
         return {
-            "response": final_state["response"],
-            "agents_used": final_state["agents_used"],
-            "error": final_state["error"],
-            "agent_results": final_state["agent_results"],
+            "response": final_state.get("response", ""),
+            "agents_used": final_state.get("agents_used", []),
+            "error": final_state.get("error"),
+            "agent_results": final_state.get("agent_results", {}),
         }
 
     except Exception as e:

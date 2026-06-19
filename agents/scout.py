@@ -3,7 +3,7 @@ from langgraph.prebuilt import create_react_agent
 from llm.factory import get_llm
 from tools.football_data import get_wc_matches, get_team_squad, get_wc_standings
 from tools.espn import get_live_scores, get_match_summary, get_team_news
-from tools.mcp_client import get_search_tools
+from tools.search import web_search
 from prompts.scout import SCOUT_PROMPT
 from memory.session_store import get_history, add_turn, set_context
 from memory.memory_manager import build_context_message, extract_and_save
@@ -19,8 +19,7 @@ BASE_TOOLS = [
 
 async def _build_agent():
     llm = get_llm()
-    mcp_tools = await get_search_tools()
-    all_tools = BASE_TOOLS + mcp_tools
+    all_tools = BASE_TOOLS + [web_search]
     return create_react_agent(
         model=llm,
         tools=all_tools,

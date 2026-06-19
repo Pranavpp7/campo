@@ -3,7 +3,7 @@ from langgraph.prebuilt import create_react_agent
 from llm.factory import get_llm
 from tools.football_data import get_wc_matches
 from tools.weather import get_venue_weather
-from tools.mcp_client import get_search_tools
+from tools.search import web_search
 from prompts.localpulse import LOCALPULSE_PROMPT
 from memory.session_store import get_history, add_turn, set_context, get_context
 from memory.memory_manager import build_context_message, extract_and_save
@@ -15,8 +15,7 @@ BASE_TOOLS = [
 
 async def _build_agent():
     llm = get_llm()
-    mcp_tools = await get_search_tools()
-    all_tools = BASE_TOOLS + mcp_tools
+    all_tools = BASE_TOOLS + [web_search]
     return create_react_agent(
         model=llm,
         tools=all_tools,
@@ -47,9 +46,6 @@ async def run_localpulse(task: str, session_id: str, user_id: str = "default") -
         history = await get_history(session_id)
         messages = history + [{"role": "user", "content": task}]
 
-        history = await get_history(session_id)
-        messages = history + [{"role": "user", "content": task}]
-
         # Inject Scout's findings from this session, if available
         scout_context = await get_context(session_id, "scout_result")
         if scout_context:
@@ -64,10 +60,6 @@ async def run_localpulse(task: str, session_id: str, user_id: str = "default") -
             messages = [{"role": "system", "content": scout_message}] + messages
 
         # Inject long-term memory context if relevant
-        memory_context = await build_context_message(user_id, task)
-        if memory_context:
-            messages = [{"role": "system", "content": memory_context}] + messages
-
         memory_context = await build_context_message(user_id, task)
         if memory_context:
             messages = [{"role": "system", "content": memory_context}] + messages
