@@ -5,9 +5,11 @@ const BASE_URL = 'http://localhost:8000'
 
 const client = axios.create({
   baseURL: BASE_URL,
-  // Multi-agent runs can be slow; the backend caps each agent at 120s, so we
-  // give the request a little more headroom before giving up client-side.
-  timeout: 135_000,
+  // Multi-agent runs can be slow: the backend caps each agent at 120s and then
+  // still has to classify + synthesize on top, so its worst case is ~150s+.
+  // Give the client comfortable headroom so it never aborts a request the
+  // backend is still working on.
+  timeout: 180_000,
   headers: { 'Content-Type': 'application/json' },
 })
 

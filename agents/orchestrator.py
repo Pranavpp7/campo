@@ -1,11 +1,9 @@
 import json
 import asyncio
 from datetime import datetime, timezone
-from typing import Annotated
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from llm.factory import get_classifier_llm, get_synthesis_llm
 from agents.scout import run_scout
 from agents.logistics import run_logistics
@@ -130,10 +128,13 @@ async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
     # plan travel to a match that has already been played). Prepended to the
     # memory_context string so it rides the existing injection path — no new
     # runner parameter — and it still reaches agents when there are no memories.
-    current_date = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
+    current_datetime = datetime.now(timezone.utc).strftime("%A, %d %B %Y, %H:%M UTC")
     date_context = (
-        f"The current date is {current_date} (UTC). Reason relative to this date — "
-        "distinguish matches already played from upcoming ones."
+        f"The current date and time is {current_datetime}. Reason relative to this. "
+        "All World Cup 2026 venues are in North American time zones (roughly UTC-4 "
+        "to UTC-7), so near the UTC day boundary a venue's local date may be the "
+        "previous day — account for this when judging whether a match has already "
+        "been played. Distinguish matches already played from upcoming ones."
     )
     memory_context = (
         f"{date_context}\n\n{memory_context}" if memory_context else date_context
