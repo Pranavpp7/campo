@@ -5,10 +5,11 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, SystemMessage
-from llm.factory import get_llm, get_classifier_llm
+from llm.factory import get_classifier_llm
 from agents.scout import run_scout
 from agents.logistics import run_logistics
 from agents.localpulse import run_localpulse
+from memory.memory_manager import build_context_message, extract_and_save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 VALID_AGENTS = {"scout", "logistics", "localpulse"}
@@ -33,6 +34,7 @@ class OrchestratorState(BaseModel):
     session_id: str = Field(description="Session ID for short-term memory")
     user_id: str = Field(default="default", description="User ID for long-term memory")
     agents: list[str] = Field(default_factory=list, description="Classified agent names")
+    memory_context: str | None = Field(default=None, description="Long-term memory context, loaded once per request")
     agent_results: dict[str, dict] = Field(default_factory=dict, description="Results keyed by agent name")
     response: str = Field(default="", description="Final synthesized response")
     agents_used: list[str] = Field(default_factory=list, description="Agents that ran successfully")
@@ -115,14 +117,18 @@ async def classify_node(state: OrchestratorState) -> OrchestratorState:
     return state.model_copy(update={"agents": agents})
 
 async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
-    """Dispatch to classified agents. Scout runs first if multi-agent."""
+    """Dispatch to all classified agents in parallel."""
     results: dict[str, dict] = {}
+
+    # Load long-term memory context ONCE per request, instead of each agent
+    # independently re-running the same mem0 vector search.
+    memory_context = await build_context_message(state.user_id, state.message)
 
     async def run_with_timeout(agent_name: str) -> dict:
         runner = AGENT_RUNNERS[agent_name]
         try:
             return await asyncio.wait_for(
-                runner(state.message, state.session_id, state.user_id),
+                runner(state.message, state.session_id, state.user_id, memory_context),
                 timeout=AGENT_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -142,25 +148,24 @@ async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
                 "fallbacks_used": [],
             }
 
-    if "scout" in state.agents and len(state.agents) > 1:
-        # Scout first — others can read scout_result from session context
-        results["scout"] = await run_with_timeout("scout")
-        remaining = [a for a in state.agents if a != "scout"]
-        remaining_results = await asyncio.gather(
-            *[run_with_timeout(a) for a in remaining]
-        )
-        for agent_name, result in zip(remaining, remaining_results):
-            results[agent_name] = result
-    else:
-        all_results = await asyncio.gather(
-            *[run_with_timeout(a) for a in state.agents]
-        )
-        for agent_name, result in zip(state.agents, all_results):
-            results[agent_name] = result
+    # Run all classified agents fully in parallel. Previously Scout ran first
+    # (serial) so others could read its scout_result from session context, but
+    # that added a full agent's latency before the rest even started. The
+    # downstream agents no longer read scout_result, so there's no ordering need.
+    all_results = await asyncio.gather(
+        *[run_with_timeout(a) for a in state.agents]
+    )
+    for agent_name, result in zip(state.agents, all_results):
+        results[agent_name] = result
+
+    # Extract and persist any new long-term preferences ONCE per request,
+    # instead of each agent re-running the same Groq extraction on the same message.
+    await extract_and_save(state.user_id, state.message)
 
     agents_used = [a for a, r in results.items() if not r.get("error")]
 
     return state.model_copy(update={
+        "memory_context": memory_context,
         "agent_results": results,
         "agents_used": agents_used,
     })
@@ -181,8 +186,12 @@ async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
             only_result = next(iter(state.agent_results.values()))
             return state.model_copy(update={"response": only_result["result"]})
 
-        # Multi-agent case: synthesize
-        llm = get_llm()
+        # Multi-agent case: synthesize.
+        # Synthesis is text combination (merge/dedupe structured agent outputs),
+        # not heavy reasoning — the lightweight classifier-tier model is
+        # sufficient and avoids adding another large-model call to an already
+        # expensive multi-agent path (less latency, less rate-limit pressure).
+        llm = get_classifier_llm()
         prompt = SYNTHESIS_PROMPT.format(
             message=state.message,
             agent_outputs=agent_outputs,

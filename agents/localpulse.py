@@ -5,8 +5,7 @@ from tools.football_data import get_wc_matches
 from tools.weather import get_venue_weather
 from tools.search import web_search
 from prompts.localpulse import LOCALPULSE_PROMPT
-from memory.session_store import get_history, add_turn, set_context, get_context
-from memory.memory_manager import build_context_message, extract_and_save
+from memory.session_store import get_history, add_turn, set_context
 
 BASE_TOOLS = [
     get_wc_matches,
@@ -32,13 +31,19 @@ async def _get_agent():
             _agent = await _build_agent()
     return _agent
 
-async def run_localpulse(task: str, session_id: str, user_id: str = "default") -> dict:
+async def run_localpulse(
+    task: str,
+    session_id: str,
+    user_id: str = "default",
+    memory_context: str | None = None,
+) -> dict:
     """Run the LocalPulse agent on a task.
 
     Args:
         task: The natural language task from the orchestrator
         session_id: Session ID for short-term memory (conversation history)
         user_id: User ID for long-term memory (preferences across sessions)
+        memory_context: Long-term memory context, loaded once by the orchestrator
     """
     try:
         agent = await _get_agent()
@@ -46,21 +51,7 @@ async def run_localpulse(task: str, session_id: str, user_id: str = "default") -
         history = await get_history(session_id)
         messages = history + [{"role": "user", "content": task}]
 
-        # Inject Scout's findings from this session, if available
-        scout_context = await get_context(session_id, "scout_result")
-        if scout_context:
-            scout_message = (
-                "Relevant context from Scout (match intelligence) earlier in "
-                "this session:\n\n"
-                f"{scout_context}\n\n"
-                "Use this information where relevant (e.g. injury news or "
-                "match details that affect your planning/recommendations). "
-                "Don't repeat it verbatim — incorporate it naturally."
-            )
-            messages = [{"role": "system", "content": scout_message}] + messages
-
-        # Inject long-term memory context if relevant
-        memory_context = await build_context_message(user_id, task)
+        # Inject long-term memory context if the orchestrator provided it
         if memory_context:
             messages = [{"role": "system", "content": memory_context}] + messages
 
@@ -72,8 +63,6 @@ async def run_localpulse(task: str, session_id: str, user_id: str = "default") -
         await add_turn(session_id, "user", task)
         await add_turn(session_id, "assistant", response_text)
         await set_context(session_id, "localpulse_result", response_text)
-
-        await extract_and_save(user_id, task)
 
         return {
             "result": response_text,

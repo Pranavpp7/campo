@@ -6,7 +6,6 @@ from tools.espn import get_live_scores, get_match_summary, get_team_news
 from tools.search import web_search
 from prompts.scout import SCOUT_PROMPT
 from memory.session_store import get_history, add_turn, set_context
-from memory.memory_manager import build_context_message, extract_and_save
 
 BASE_TOOLS = [
     get_wc_matches,
@@ -36,13 +35,19 @@ async def _get_agent():
             _agent = await _build_agent()
     return _agent
 
-async def run_scout(task: str, session_id: str, user_id: str = "default") -> dict:
+async def run_scout(
+    task: str,
+    session_id: str,
+    user_id: str = "default",
+    memory_context: str | None = None,
+) -> dict:
     """Run the Scout agent on a task.
 
     Args:
         task: The natural language task from the orchestrator
         session_id: Session ID for short-term memory (conversation history)
         user_id: User ID for long-term memory (preferences across sessions)
+        memory_context: Long-term memory context, loaded once by the orchestrator
     """
     try:
         agent = await _get_agent()
@@ -50,8 +55,7 @@ async def run_scout(task: str, session_id: str, user_id: str = "default") -> dic
         history = await get_history(session_id)
         messages = history + [{"role": "user", "content": task}]
 
-        # Inject long-term memory context if relevant
-        memory_context = await build_context_message(user_id, task)
+        # Inject long-term memory context if the orchestrator provided it
         if memory_context:
             messages = [{"role": "system", "content": memory_context}] + messages
 
@@ -63,9 +67,6 @@ async def run_scout(task: str, session_id: str, user_id: str = "default") -> dic
         await add_turn(session_id, "user", task)
         await add_turn(session_id, "assistant", response_text)
         await set_context(session_id, "scout_result", response_text)
-
-        # Extract any new long-term preferences from this turn
-        await extract_and_save(user_id, task)
 
         return {
             "result": response_text,
