@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langchain_core.messages import HumanMessage, SystemMessage
-from llm.factory import get_classifier_llm
+from llm.factory import get_classifier_llm, get_synthesis_llm
 from agents.scout import run_scout
 from agents.logistics import run_logistics
 from agents.localpulse import run_localpulse
 from memory.memory_manager import build_context_message, extract_and_save
+from memory.session_store import add_turn
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 VALID_AGENTS = {"scout", "logistics", "localpulse"}
@@ -202,10 +203,11 @@ async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
 
         # Multi-agent case: synthesize.
         # Synthesis is text combination (merge/dedupe structured agent outputs),
-        # not heavy reasoning — the lightweight classifier-tier model is
-        # sufficient and avoids adding another large-model call to an already
-        # expensive multi-agent path (less latency, less rate-limit pressure).
-        llm = get_classifier_llm()
+        # not heavy reasoning — so the lightweight classifier-tier model is the
+        # primary. It carries a heavy-model fallback (get_synthesis_llm) because
+        # the full agent outputs can exceed Groq's free-tier TPM on a 3-agent
+        # run; without it, a throttle drops us to raw concatenation below.
+        llm = get_synthesis_llm()
         prompt = SYNTHESIS_PROMPT.format(
             message=state.message,
             agent_outputs=agent_outputs,
@@ -255,9 +257,22 @@ async def run_orchestrator(
             user_id=user_id,
         )
         final_state = await _graph.ainvoke(initial_state)
+        response_text = final_state.get("response", "")
+
+        # Persist exactly one user turn + the final synthesized answer per
+        # request. Agents no longer write history themselves — with parallel
+        # dispatch that triplicated the user message and stored each agent's
+        # raw output separately. Wrapped so a memory hiccup can't discard an
+        # otherwise-good response.
+        if response_text:
+            try:
+                await add_turn(session_id, "user", message)
+                await add_turn(session_id, "assistant", response_text)
+            except Exception as e:
+                print(f"History persistence failed (non-fatal): {e}")
 
         return {
-            "response": final_state.get("response", ""),
+            "response": response_text,
             "agents_used": final_state.get("agents_used", []),
             "error": final_state.get("error"),
             "agent_results": final_state.get("agent_results", {}),

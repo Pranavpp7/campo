@@ -5,7 +5,7 @@ from tools.football_data import get_wc_matches, get_team_squad, get_wc_standings
 from tools.espn import get_live_scores, get_match_summary, get_team_news
 from tools.search import web_search
 from prompts.scout import SCOUT_PROMPT
-from memory.session_store import get_history, add_turn, set_context
+from memory.session_store import get_history, set_context
 
 BASE_TOOLS = [
     get_wc_matches,
@@ -64,8 +64,8 @@ async def run_scout(
         final_message = result["messages"][-1]
         response_text = final_message.content
 
-        await add_turn(session_id, "user", task)
-        await add_turn(session_id, "assistant", response_text)
+        # History is persisted once by the orchestrator (run_orchestrator);
+        # agents only publish cross-agent context here.
         await set_context(session_id, "scout_result", response_text)
 
         return {

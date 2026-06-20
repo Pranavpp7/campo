@@ -61,3 +61,15 @@ def get_classifier_llm() -> ChatGroq:
         temperature=0,
         api_key=os.getenv("GROQ_API_KEY"),
     )
+
+def get_synthesis_llm():
+    """LLM for multi-agent synthesis — lightweight primary, heavy fallback.
+
+    Synthesis is text combination, not heavy reasoning, so the classifier-tier
+    model is the primary (fast, cheap, low rate-limit pressure). But the
+    synthesis prompt embeds the full agent outputs, which on a 3-agent run can
+    exceed Groq's free-tier TPM — so fall back to the heavy model (OpenRouter,
+    with Groq-120b behind it) rather than failing and silently dropping to raw
+    concatenation of the agent outputs.
+    """
+    return get_classifier_llm().with_fallbacks([get_llm()])

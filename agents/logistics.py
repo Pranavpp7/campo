@@ -6,7 +6,7 @@ from tools.weather import get_venue_weather
 from tools.logistics import calculate_venue_distance
 from tools.search import web_search
 from prompts.logistics import LOGISTICS_PROMPT
-from memory.session_store import get_history, add_turn, set_context
+from memory.session_store import get_history, set_context
 
 BASE_TOOLS = [
     get_wc_matches,
@@ -62,8 +62,8 @@ async def run_logistics(
         final_message = result["messages"][-1]
         response_text = final_message.content
 
-        await add_turn(session_id, "user", task)
-        await add_turn(session_id, "assistant", response_text)
+        # History is persisted once by the orchestrator (run_orchestrator);
+        # agents only publish cross-agent context here.
         await set_context(session_id, "logistics_result", response_text)
 
         return {
