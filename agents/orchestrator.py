@@ -13,7 +13,7 @@ from memory.memory_manager import build_context_message, extract_and_save
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 VALID_AGENTS = {"scout", "logistics", "localpulse"}
-AGENT_TIMEOUT_SECONDS = 60
+AGENT_TIMEOUT_SECONDS = 120
 
 AGENT_RUNNERS = {
     "scout": run_scout,
