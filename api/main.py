@@ -11,9 +11,16 @@ load_dotenv()
 app = FastAPI(title="Campo API", version="1.0.0")
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
+# Browsers treat localhost and 127.0.0.1 as distinct origins, so allow both —
+# the dev frontend may be opened under either hostname on port 3000.
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
