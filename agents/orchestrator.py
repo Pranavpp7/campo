@@ -1,5 +1,6 @@
 import json
 import asyncio
+from datetime import datetime, timezone
 from typing import Annotated
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
@@ -123,6 +124,19 @@ async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
     # Load long-term memory context ONCE per request, instead of each agent
     # independently re-running the same mem0 vector search.
     memory_context = await build_context_message(state.user_id, state.message)
+
+    # Inject the current date so agents reason relative to "now" (e.g. don't
+    # plan travel to a match that has already been played). Prepended to the
+    # memory_context string so it rides the existing injection path — no new
+    # runner parameter — and it still reaches agents when there are no memories.
+    current_date = datetime.now(timezone.utc).strftime("%A, %d %B %Y")
+    date_context = (
+        f"The current date is {current_date} (UTC). Reason relative to this date — "
+        "distinguish matches already played from upcoming ones."
+    )
+    memory_context = (
+        f"{date_context}\n\n{memory_context}" if memory_context else date_context
+    )
 
     async def run_with_timeout(agent_name: str) -> dict:
         runner = AGENT_RUNNERS[agent_name]
