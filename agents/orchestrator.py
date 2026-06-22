@@ -8,7 +8,6 @@ from llm.factory import get_classifier_llm, get_synthesis_llm
 from agents.scout import run_scout
 from agents.logistics import run_logistics
 from agents.localpulse import run_localpulse
-from memory.memory_manager import build_context_message, extract_and_save
 from memory.session_store import add_turn
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -47,7 +46,8 @@ Available agents:
 - scout: Match intelligence — team form, squad news, injuries, head-to-head,
   tactical analysis, and (only if explicitly requested) match outcome predictions.
 - logistics: Fan travel planning — getting to matches, venue weather,
-  accommodation areas, multi-match itinerary feasibility.
+  accommodation areas, multi-match itinerary feasibility. Use this when
+  the user mentions traveling to, attending, or getting to a match.
 - localpulse: Business intelligence for food & beverage / hospitality operators
   near venues — expected demand, weather-informed operations, local regulations.
 
@@ -92,42 +92,50 @@ Agent outputs:
 Write a single, unified response now.
 """
 
-# ── Nodes ─────────────────────────────────────────────────────────────────────
-async def classify_node(state: OrchestratorState) -> OrchestratorState:
-    """Classify which agents are relevant to the user's message."""
+# ── Standalone classify function (testable without the full graph) ─────────────
+async def classify_intent(message: str) -> list[str]:
+    """
+    Classify which agents are relevant to the user's message.
+    Extracted as a standalone function so it can be tested independently
+    of the LangGraph graph without triggering heavy service initialization.
+    """
+    # Guard: empty or whitespace input skips the LLM and defaults to scout
+    if not message or not message.strip():
+        return ["scout"]
     try:
         llm = get_classifier_llm()
-        prompt = CLASSIFY_PROMPT.format(message=state.message)
+        prompt = CLASSIFY_PROMPT.format(message=message)
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         raw = response.content.strip()
-
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-
         agents = json.loads(raw.strip())
         agents = [a for a in agents if a in VALID_AGENTS]
-        agents = agents if agents else ["scout"]
-
+        return agents if agents else ["scout"]
     except Exception as e:
         print(f"Classification error, defaulting to scout: {e}")
-        agents = ["scout"]
+        return ["scout"]
 
+
+# ── Nodes ─────────────────────────────────────────────────────────────────────
+async def classify_node(state: OrchestratorState) -> OrchestratorState:
+    """Thin wrapper — delegates to classify_intent for testability."""
+    agents = await classify_intent(state.message)
     return state.model_copy(update={"agents": agents})
+
 
 async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
     """Dispatch to all classified agents in parallel."""
+    # Lazy import — keeps mem0/HuggingFace/Qdrant from initializing at module
+    # load time, which caused a 102-second hang when tests imported this module.
+    from memory.memory_manager import build_context_message, extract_and_save
+
     results: dict[str, dict] = {}
 
-    # Load long-term memory context ONCE per request, instead of each agent
-    # independently re-running the same mem0 vector search.
     memory_context = await build_context_message(state.user_id, state.message)
 
-    # Inject the current date so agents reason relative to "now" (e.g. don't
-    # plan travel to a match that has already been played). Prepended to the
-    # memory_context string so it rides the existing injection path — no new
-    # runner parameter — and it still reaches agents when there are no memories.
     current_datetime = datetime.now(timezone.utc).strftime("%A, %d %B %Y, %H:%M UTC")
     date_context = (
         f"The current date and time is {current_datetime}. Reason relative to this. "
@@ -164,18 +172,12 @@ async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
                 "fallbacks_used": [],
             }
 
-    # Run all classified agents fully in parallel. Previously Scout ran first
-    # (serial) so others could read its scout_result from session context, but
-    # that added a full agent's latency before the rest even started. The
-    # downstream agents no longer read scout_result, so there's no ordering need.
     all_results = await asyncio.gather(
         *[run_with_timeout(a) for a in state.agents]
     )
     for agent_name, result in zip(state.agents, all_results):
         results[agent_name] = result
 
-    # Extract and persist any new long-term preferences ONCE per request,
-    # instead of each agent re-running the same Groq extraction on the same message.
     await extract_and_save(state.user_id, state.message)
 
     agents_used = [a for a, r in results.items() if not r.get("error")]
@@ -186,10 +188,10 @@ async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
         "agents_used": agents_used,
     })
 
+
 async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
     """Synthesize agent outputs into a single coherent response."""
     try:
-        # Build agent outputs string for the synthesis prompt
         agent_outputs_parts = []
         for agent_name, result in state.agent_results.items():
             display = AGENT_DISPLAY_NAMES[agent_name]
@@ -197,17 +199,10 @@ async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
             agent_outputs_parts.append(f"=== {display} ===\n{content}")
         agent_outputs = "\n\n".join(agent_outputs_parts)
 
-        # Single-agent case: skip synthesis LLM call, return directly
         if len(state.agent_results) == 1:
             only_result = next(iter(state.agent_results.values()))
             return state.model_copy(update={"response": only_result["result"]})
 
-        # Multi-agent case: synthesize.
-        # Synthesis is text combination (merge/dedupe structured agent outputs),
-        # not heavy reasoning — so the lightweight classifier-tier model is the
-        # primary. It carries a heavy-model fallback (get_synthesis_llm) because
-        # the full agent outputs can exceed Groq's free-tier TPM on a 3-agent
-        # run; without it, a throttle drops us to raw concatenation below.
         llm = get_synthesis_llm()
         prompt = SYNTHESIS_PROMPT.format(
             message=state.message,
@@ -217,7 +212,6 @@ async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
         return state.model_copy(update={"response": response.content.strip()})
 
     except Exception as e:
-        # Fallback: concatenate raw outputs rather than losing them
         fallback = "\n\n".join(
             f"**{AGENT_DISPLAY_NAMES[a]}**\n{r['result']}"
             for a, r in state.agent_results.items()
@@ -227,22 +221,21 @@ async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
             "error": f"Synthesis failed ({e}), showing raw agent outputs.",
         })
 
+
 # ── Graph ─────────────────────────────────────────────────────────────────────
 def _build_graph() -> StateGraph:
     graph = StateGraph(OrchestratorState)
-
     graph.add_node("classify", classify_node)
     graph.add_node("dispatch", dispatch_node)
     graph.add_node("synthesize", synthesize_node)
-
     graph.set_entry_point("classify")
     graph.add_edge("classify", "dispatch")
     graph.add_edge("dispatch", "synthesize")
     graph.add_edge("synthesize", END)
-
     return graph.compile()
 
 _graph = _build_graph()
+
 
 # ── Public API ────────────────────────────────────────────────────────────────
 async def run_orchestrator(
@@ -260,11 +253,6 @@ async def run_orchestrator(
         final_state = await _graph.ainvoke(initial_state)
         response_text = final_state.get("response", "")
 
-        # Persist exactly one user turn + the final synthesized answer per
-        # request. Agents no longer write history themselves — with parallel
-        # dispatch that triplicated the user message and stored each agent's
-        # raw output separately. Wrapped so a memory hiccup can't discard an
-        # otherwise-good response.
         if response_text:
             try:
                 await add_turn(session_id, "user", message)
