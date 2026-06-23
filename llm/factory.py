@@ -73,3 +73,18 @@ def get_synthesis_llm():
     concatenation of the agent outputs.
     """
     return get_classifier_llm().with_fallbacks([get_llm()])
+
+def get_judge_llm() -> ChatGroq:
+    """LLM for eval judging — Groq gpt-oss-120b.
+
+    Used only in the eval suite to score agent response quality.
+    Same model as the production heavy path but called directly on Groq
+    rather than through OpenRouter — judge prompts are short enough to
+    stay within the 8k TPM free-tier limit.
+    Not used in any production path.
+    """
+    return ChatGroq(
+        model="gpt-oss-120b",
+        temperature=0,
+        api_key=os.getenv("GROQ_API_KEY"),
+    )
