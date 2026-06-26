@@ -202,3 +202,113 @@ def get_wc_standings() -> str:
 
     except Exception as e:
         return f"Error fetching standings: {str(e)}"
+
+
+# ── Structured data functions (for REST endpoints, NOT agents) ──────────────────
+# These return parsed JSON-serialisable structures instead of display strings.
+# They are intentionally NOT @tool decorated — they're meant to be called
+# directly by API endpoints that power a fan-facing UI. Exceptions propagate so
+# the caller (the endpoint) can decide how to surface partial failures.
+
+def get_wc_matches_data(status: str = "SCHEDULED") -> list[dict]:
+    """Structured 2026 World Cup matches filtered by status.
+
+    Args:
+        status: One of SCHEDULED, LIVE, IN_PLAY, PAUSED, FINISHED, POSTPONED.
+
+    Returns:
+        List of match dicts:
+        {
+            "utc_date": str,
+            "home": {"name": str, "crest": str | None},
+            "away": {"name": str, "crest": str | None},
+            "home_score": int | None,
+            "away_score": int | None,
+            "status": str,
+            "venue": str | None,
+            "group": str | None,
+        }
+        No 20-match cap — that cap exists only to protect LLM token budgets.
+    """
+    cache_key = f"wc_matches_data_{status}"
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    data = _api_get(f"competitions/{WC_CODE}/matches", {"status": status})
+    matches = data.get("matches", [])
+
+    result = []
+    for m in matches:
+        home_team = m.get("homeTeam", {})
+        away_team = m.get("awayTeam", {})
+        ft = m.get("score", {}).get("fullTime", {})
+        result.append({
+            "utc_date": m.get("utcDate"),
+            "home": {"name": home_team.get("name"), "crest": home_team.get("crest")},
+            "away": {"name": away_team.get("name"), "crest": away_team.get("crest")},
+            "home_score": ft.get("home"),
+            "away_score": ft.get("away"),
+            "status": m.get("status"),
+            "venue": m.get("venue"),
+            "group": m.get("group") or m.get("stage"),
+        })
+
+    _set_cached(cache_key, result, TTL_MATCHES)
+    return result
+
+
+def get_wc_standings_data() -> list[dict]:
+    """Structured 2026 World Cup group stage standings.
+
+    Returns:
+        List of group dicts:
+        {
+            "group": str,
+            "table": [
+                {
+                    "position": int,
+                    "team": {"name": str, "crest": str | None},
+                    "points": int,
+                    "won": int,
+                    "draw": int,
+                    "lost": int,
+                    "goals_for": int,
+                    "goals_against": int,
+                    "goal_difference": int,
+                },
+                ...
+            ],
+        }
+    """
+    cache_key = "wc_standings_data"
+    cached = _get_cached(cache_key)
+    if cached is not None:
+        return cached
+
+    data = _api_get(f"competitions/{WC_CODE}/standings")
+    standings = data.get("standings", [])
+
+    result = []
+    for group in standings:
+        table = []
+        for entry in group.get("table", []):
+            team = entry.get("team", {})
+            table.append({
+                "position": entry.get("position"),
+                "team": {"name": team.get("name"), "crest": team.get("crest")},
+                "points": entry.get("points"),
+                "won": entry.get("won"),
+                "draw": entry.get("draw"),
+                "lost": entry.get("lost"),
+                "goals_for": entry.get("goalsFor"),
+                "goals_against": entry.get("goalsAgainst"),
+                "goal_difference": entry.get("goalDifference"),
+            })
+        result.append({
+            "group": group.get("group"),
+            "table": table,
+        })
+
+    _set_cached(cache_key, result, TTL_STANDINGS)
+    return result
