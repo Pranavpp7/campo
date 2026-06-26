@@ -24,3 +24,5 @@ qdrant_storage/
 storage/
 memory/mem0_history.db
 inspect_tools.py
+
+evals/results/
