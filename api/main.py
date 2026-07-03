@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+import asyncio
 import time
 
 from agents.orchestrator import run_orchestrator
@@ -56,6 +57,7 @@ class MatchOut(BaseModel):
 class StandingRowOut(BaseModel):
     position: int | None = None
     team: TeamOut
+    played: int | None = None
     points: int | None = None
     won: int | None = None
     draw: int | None = None
@@ -122,21 +124,23 @@ async def today():
     recent_text = None
     standings_text = None
 
+    # The tools use blocking `requests` under the hood — run them in worker
+    # threads so a slow upstream call can't stall the event loop.
     # Upcoming fixtures.
     try:
-        upcoming_text = get_wc_matches.invoke({"status": "SCHEDULED"})
+        upcoming_text = await asyncio.to_thread(get_wc_matches.invoke, {"status": "SCHEDULED"})
     except Exception as e:
         errors["upcoming_matches"] = str(e)
 
     # Recent / completed results.
     try:
-        recent_text = get_wc_matches.invoke({"status": "FINISHED"})
+        recent_text = await asyncio.to_thread(get_wc_matches.invoke, {"status": "FINISHED"})
     except Exception as e:
         errors["recent_matches"] = str(e)
 
     # Group standings.
     try:
-        standings_text = get_wc_standings.invoke({})
+        standings_text = await asyncio.to_thread(get_wc_standings.invoke, {})
     except Exception as e:
         errors["standings"] = str(e)
 
@@ -167,7 +171,8 @@ async def standings():
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
     try:
-        response["standings_text"] = get_wc_standings.invoke({})
+        # Blocking `requests` call — keep it off the event loop.
+        response["standings_text"] = await asyncio.to_thread(get_wc_standings.invoke, {})
     except Exception as e:
         response["error"] = str(e)
     return response
@@ -181,33 +186,46 @@ async def today_data():
     NO orchestrator. Returns real JSON arrays (match cards, standings rows)
     that a fan UI can bind to, unlike the string-based /today endpoint.
     """
-    from tools.football_data import get_wc_matches_data, get_wc_standings_data
+    from tools.football_data import (
+        get_wc_today_matches_data,
+        get_wc_recent_results_data,
+        get_wc_standings_data,
+    )
+
+    # The data functions use blocking `requests` — run them in worker threads,
+    # in parallel, so slow upstream calls neither stall the event loop nor
+    # stack up sequentially.
+    results = await asyncio.gather(
+        asyncio.to_thread(get_wc_today_matches_data),
+        asyncio.to_thread(get_wc_recent_results_data),
+        asyncio.to_thread(get_wc_standings_data),
+        return_exceptions=True,
+    )
 
     errors: dict[str, str] = {}
-    upcoming: list[dict] = []
-    recent: list[dict] = []
-    groups: list[dict] = []
+    fetched_ats: list[str] = []
 
-    try:
-        upcoming = get_wc_matches_data("SCHEDULED")
-    except Exception as e:
-        errors["upcoming_matches"] = str(e)
+    def unpack(result, key: str) -> list[dict]:
+        if isinstance(result, BaseException):
+            errors[key] = str(result)
+            return []
+        data, fetched_at = result
+        fetched_ats.append(fetched_at)
+        return data
 
-    try:
-        recent = get_wc_matches_data("FINISHED")
-    except Exception as e:
-        errors["recent_matches"] = str(e)
+    upcoming = unpack(results[0], "today_matches")
+    recent = unpack(results[1], "recent_matches")
+    groups = unpack(results[2], "standings")
 
-    try:
-        groups = get_wc_standings_data()
-    except Exception as e:
-        errors["standings"] = str(e)
+    # as_of reflects when the data was actually fetched upstream (responses
+    # may be served from cache); report the oldest dataset's stamp.
+    as_of = min(fetched_ats) if fetched_ats else datetime.now(timezone.utc).isoformat()
 
     return TodayDataResponse(
         matches=upcoming,
         recent_matches=recent,
         standings=groups,
-        as_of=datetime.now(timezone.utc).isoformat(),
+        as_of=as_of,
         errors=errors or None,
     )
 
@@ -222,10 +240,11 @@ async def standings_data():
     from tools.football_data import get_wc_standings_data
 
     try:
-        groups = get_wc_standings_data()
+        # Blocking `requests` call — keep it off the event loop.
+        groups, fetched_at = await asyncio.to_thread(get_wc_standings_data)
         return StandingsDataResponse(
             standings=groups,
-            as_of=datetime.now(timezone.utc).isoformat(),
+            as_of=fetched_at,
         )
     except Exception as e:
         return StandingsDataResponse(

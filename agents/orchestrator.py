@@ -112,7 +112,9 @@ async def classify_intent(message: str) -> list[str]:
             if raw.startswith("json"):
                 raw = raw[4:]
         agents = json.loads(raw.strip())
-        agents = [a for a in agents if a in VALID_AGENTS]
+        # Dedupe (preserving order) — a duplicate from the LLM would otherwise
+        # dispatch the same agent twice and silently drop one result.
+        agents = list(dict.fromkeys(a for a in agents if a in VALID_AGENTS))
         return agents if agents else ["scout"]
     except Exception as e:
         print(f"Classification error, defaulting to scout: {e}")
