@@ -13,14 +13,17 @@ export default function MessageBubble({ role, content, loading, error }: Props) 
   if (role === 'user') {
     return (
       <div className="bubble bubble--user">
-        <span className="bubble__tag">QUERY</span>
         <p className="bubble__question">{content}</p>
       </div>
     )
   }
 
   return (
-    <div className={`bubble bubble--campo${error ? ' bubble--error' : ''}`}>
+    <div
+      className={`bubble bubble--campo${error ? ' bubble--error' : ''}${
+        loading ? ' bubble--loading' : ''
+      }`}
+    >
       <span className="bubble__tag">CAMPO</span>
       {loading ? (
         <div className="bubble__thinking" role="status" aria-label="Campo is thinking">

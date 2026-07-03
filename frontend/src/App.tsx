@@ -31,7 +31,8 @@ export default function App() {
       latencyMs: null,
       status: 'pending',
     }
-    setTurns((prev) => [pending, ...prev])
+    // Oldest first — the conversation flows down to the docked input.
+    setTurns((prev) => [...prev, pending])
     setLoading(true)
 
     try {

@@ -48,13 +48,13 @@ body {
   line-height: 1.6;
   color: var(--text);
   background-color: var(--bg);
-  /* Signature: a subtle diagonal mown-pitch texture. */
+  /* Signature: a whisper of diagonal mown-pitch texture — felt, not seen. */
   background-image: repeating-linear-gradient(
     118deg,
-    rgba(0, 200, 83, 0.04) 0,
-    rgba(0, 200, 83, 0.04) 44px,
-    transparent 44px,
-    transparent 88px
+    rgba(0, 200, 83, 0.016) 0,
+    rgba(0, 200, 83, 0.016) 64px,
+    transparent 64px,
+    transparent 128px
   );
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
@@ -174,13 +174,12 @@ textarea {
 }
 
 /* ── Split layout ────────────────────────────────────────────────────────── */
-/* ── Ask screen: single full-width conversation ─────────────────────────────
-   The chat fills the pane; its content sits in a centered reading column
-   (--chat-col) so answers stay comfortable to read on wide monitors while
-   wide tables still get real room. */
+/* ── Ask screen: one centered conversation column ───────────────────────────
+   ChatGPT-style focused column: the composer, empty state and messages all
+   share the same ~720px centered column. Wide tables scroll inside it. */
 :root {
-  --chat-col: 920px;
-  --chat-gutter: max(28px, calc((100% - var(--chat-col)) / 2));
+  --chat-col: 720px;
+  --chat-gutter: max(24px, calc((100% - var(--chat-col)) / 2));
 }
 
 .chat-panel {
@@ -204,74 +203,115 @@ textarea {
     var(--surface-2);
 }
 
-/* ── Composer (input at the TOP of the chat panel) ──────────────────────── */
+/* ── Composer ───────────────────────────────────────────────────────────────
+   Two placements: embedded in the hero before any conversation exists, and
+   docked at the bottom once one does. */
 .composer {
   display: flex;
   gap: 12px;
   align-items: flex-end;
-  /* Full-width bar, content held to the centered reading column. */
-  padding: 20px var(--chat-gutter);
-  border-bottom: 1px solid var(--line);
-  background: rgba(20, 24, 38, 0.5);
-  backdrop-filter: blur(8px);
+}
+
+/* Part of the hero composition — no bar chrome, just the input. */
+.composer--hero {
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+/* Docked beneath the conversation, full-width bar with the shared column. */
+.composer--docked {
+  flex: 0 0 auto;
+  padding: 14px var(--chat-gutter) 16px;
+  border-top: 1px solid var(--line);
+  background: rgba(10, 10, 15, 0.85);
+  backdrop-filter: blur(10px);
+}
+
+.composer--docked .composer__input {
+  min-height: 48px;
+}
+
+/* One surface holding the textarea and the send button — the field IS the
+   control, not an input with a button bolted on. */
+.composer__field {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 7px 7px 7px 18px;
+  background: linear-gradient(180deg, #1d2333, #151a27);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer__field:focus-within {
+  border-color: rgba(0, 200, 83, 0.65);
+  box-shadow: 0 0 0 3px var(--green-soft), 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.composer--hero .composer__field {
+  padding: 10px 10px 10px 20px;
+  border-radius: 18px;
 }
 
 .composer__input {
   flex: 1;
   resize: none;
-  min-height: 52px;
-  max-height: 180px;
-  padding: 14px 16px;
+  min-height: 24px;
+  max-height: 160px;
+  padding: 11px 0;
+  text-align: left; /* the hero centres text; input text must not inherit that */
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  background: none;
+  border: none;
   line-height: 1.5;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer--hero .composer__input {
+  font-size: 16px;
 }
 
 .composer__input::placeholder {
   color: var(--muted);
-  opacity: 0.7;
+  opacity: 0.65;
 }
 
 .composer__input:focus {
   outline: none;
-  border-color: var(--green);
-  box-shadow: 0 0 0 3px var(--green-soft);
 }
 
 .composer__input:disabled {
   opacity: 0.6;
 }
 
+/* Compact send control inside the field. */
 .composer__send {
   flex: 0 0 auto;
-  height: 52px;
-  padding: 0 28px;
-  font-weight: 700;
-  font-size: 14px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--bg);
-  background: var(--green);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  color: #05230e;
+  background: linear-gradient(180deg, #17d967, #00b84c);
   border: none;
-  border-radius: 10px;
+  border-radius: 12px;
   cursor: pointer;
   transition: transform 0.12s ease, filter 0.15s ease, box-shadow 0.15s ease,
     background 0.15s ease, color 0.15s ease;
 }
 
 .composer__send:hover:not(:disabled) {
-  filter: brightness(1.12);
+  filter: brightness(1.1);
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(0, 200, 83, 0.32);
+  box-shadow: 0 6px 16px rgba(0, 200, 83, 0.35);
 }
 
 .composer__send:active:not(:disabled) {
   transform: translateY(0);
-  filter: brightness(1.04);
-  box-shadow: 0 2px 8px rgba(0, 200, 83, 0.28);
+  filter: brightness(1.02);
 }
 
 .composer__send:focus-visible {
@@ -279,31 +319,28 @@ textarea {
   outline-offset: 2px;
 }
 
-/* Inactive (empty input): stays green-keyed so it never reads as a dead grey block. */
 .composer__send:disabled {
-  background: var(--green-soft);
-  color: var(--green);
+  background: rgba(176, 190, 197, 0.1);
+  color: var(--muted);
   cursor: not-allowed;
   box-shadow: none;
   transform: none;
   filter: none;
 }
 
-/* In-flight: gentle pulse while the request runs. */
-.composer__send--loading:disabled {
-  background: var(--green);
-  color: var(--bg);
-  opacity: 0.85;
-  animation: askPulse 1.3s ease-in-out infinite;
+/* In-flight spinner inside the send slot. */
+.composer__spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(176, 190, 197, 0.35);
+  border-top-color: var(--green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
 }
 
-@keyframes askPulse {
-  0%,
-  100% {
-    opacity: 0.7;
-  }
-  50% {
-    opacity: 1;
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -312,17 +349,10 @@ textarea {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 32px var(--chat-gutter) 56px;
+  padding: 28px var(--chat-gutter) 32px;
   display: flex;
   flex-direction: column;
-  gap: 36px;
-}
-
-.messages--empty {
-  /* Hero empty state — centered in the full-width pane. */
-  justify-content: center;
-  align-items: center;
-  padding-top: 0;
+  gap: 32px;
 }
 
 .turn {
@@ -383,16 +413,22 @@ textarea {
   border-radius: 8px;
 }
 
-/* Thinking indicator — a compact "answer forming" chip, not a status bar. */
+/* Thinking indicator — a compact "answer forming" chip, centered in the
+   conversation column while the response is in flight. */
+.bubble--loading {
+  text-align: center;
+}
+
 .bubble__thinking {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   width: fit-content;
-  padding: 14px 20px;
+  margin: 0 auto;
+  padding: 13px 20px;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 4px 14px 14px 14px;
+  border-radius: 999px;
 }
 
 .thinking-dot {
@@ -430,73 +466,60 @@ textarea {
   }
 }
 
-/* ── Empty state ─────────────────────────────────────────────────────────── */
-.empty {
-  position: relative;
-  max-width: 720px;
-  text-align: center;
-  padding: 32px 0;
-}
-
-/* Pitch-from-above motif: centre circle + halfway line, barely there. */
-.empty::before {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 460px;
-  height: 460px;
-  transform: translate(-50%, -50%);
-  border: 1px solid rgba(0, 200, 83, 0.14);
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.empty::after {
-  content: '';
-  position: absolute;
-  left: -15%;
-  right: -15%;
-  top: 50%;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(0, 200, 83, 0.14) 20%,
-    rgba(0, 200, 83, 0.14) 80%,
-    transparent
+/* ── Hero (empty state): headline + input + prompts, one composition ─────── */
+.hero {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Extra bottom padding lifts the cluster slightly above true centre —
+     optically centred instead of mathematically centred. */
+  padding: 32px var(--chat-gutter) 9vh;
+  /* Stadium floodlight: one soft pool of light behind the composition. */
+  background: radial-gradient(
+    56% 44% at 50% 30%,
+    rgba(0, 200, 83, 0.075),
+    transparent 72%
   );
-  pointer-events: none;
 }
 
-/* Keep the actual content above the motif. */
-.empty > * {
-  position: relative;
-  z-index: 1;
+.hero__inner {
+  /* Auto margins centre the cluster when there's room, degrade to normal
+     flow (scroll) on short viewports instead of clipping the top. */
+  margin: auto;
+  width: 100%;
+  max-width: 620px;
+  text-align: center;
 }
 
-.empty__eyebrow {
+.hero__accent {
+  color: var(--gold);
+}
+
+.hero__eyebrow {
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.18em;
   color: var(--green);
-  margin: 0 0 10px;
+  margin: 0 0 8px;
 }
 
-.empty__headline {
+.hero__headline {
   font-family: var(--display);
-  font-size: 72px;
+  font-size: 56px;
   line-height: 0.95;
   letter-spacing: 1px;
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   color: var(--text);
 }
 
-.empty__lede {
-  margin: 0 auto 28px;
-  font-size: 16px;
+.hero__lede {
+  margin: 0 auto 24px;
+  font-size: 15px;
   color: var(--muted);
-  max-width: 52ch;
+  max-width: 46ch;
 }
 
 .examples {
@@ -505,7 +528,7 @@ textarea {
   padding: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  gap: 10px;
   text-align: left;
 }
 
@@ -514,15 +537,20 @@ textarea {
   width: 100%;
   height: 100%;
   text-align: left;
-  padding: 14px 42px 14px 18px;
+  padding: 12px 38px 12px 16px;
+  font-size: 13.5px;
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-left: 2px solid rgba(0, 200, 83, 0.45);
+  /* Slight top-light gradient + shadow so the cards sit ABOVE the page
+     instead of being flat cutouts of the same navy. */
+  background: linear-gradient(180deg, #1b2130, #151a27);
+  border: 1px solid rgba(176, 190, 197, 0.15);
+  border-top-color: rgba(236, 239, 241, 0.12);
   border-radius: 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
   cursor: pointer;
   line-height: 1.45;
-  transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+  transition: border-color 0.15s ease, background 0.15s ease,
+    transform 0.12s ease, box-shadow 0.15s ease;
 }
 
 .example-chip__tag {
@@ -546,14 +574,14 @@ textarea {
 }
 
 .example-chip:hover {
-  border-color: var(--green);
-  border-left-color: var(--green);
-  background: var(--green-soft);
-  transform: translateX(3px);
+  border-color: rgba(0, 200, 83, 0.55);
+  background: linear-gradient(180deg, #1d2534, #171d2b);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
 }
 
 .example-chip:hover::after {
-  transform: translateY(-50%) translateX(5px);
+  transform: translateY(-50%) translateX(4px);
   opacity: 1;
 }
 
@@ -1000,13 +1028,8 @@ textarea {
     overflow-y: visible;
   }
 
-  .empty__headline {
-    font-size: 48px;
-  }
-
-  .empty::before {
-    width: 320px;
-    height: 320px;
+  .hero__headline {
+    font-size: 44px;
   }
 
   .examples {
@@ -1022,7 +1045,8 @@ textarea {
     padding: 12px 18px;
   }
 
-  .composer,
+  .hero,
+  .composer--docked,
   .messages {
     padding-left: 18px;
     padding-right: 18px;
@@ -1033,14 +1057,16 @@ textarea {
   .brand__tag {
     display: none;
   }
+}
 
-  .composer {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .composer__send {
-    width: 100%;
+/* Respect users who've opted out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
@@ -1079,14 +1105,18 @@ textarea {
 }
 
 .tabbar__tab--active {
+  /* Indicator line + colour shift only — a half-screen filled block reads
+     heavy and cheap. */
   color: var(--green);
   border-top-color: var(--green);
-  background: var(--green-soft);
 }
 
 .tabbar__icon {
-  font-size: 20px;
   line-height: 1;
+}
+
+.tabbar__icon svg {
+  display: block;
 }
 
 .tabbar__label {
@@ -1106,7 +1136,8 @@ textarea {
   min-height: 0;
 }
 
-.today-header {
+.today-header,
+.chat-header {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
