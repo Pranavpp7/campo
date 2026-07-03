@@ -26,3 +26,5 @@ memory/mem0_history.db
 inspect_tools.py
 
 evals/results/
+*.egg-info/
+snapshots/

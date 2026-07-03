@@ -1,8 +1,0 @@
-agents
-api
-evals
-llm
-memory
-prompts
-qdrant
-tools
