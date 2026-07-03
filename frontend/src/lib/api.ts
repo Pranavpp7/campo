@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { ChatRequest, ChatResponse } from '../types'
+import type { ChatRequest, ChatResponse, TodayData } from '../types'
 
 const BASE_URL = 'http://localhost:8000'
 
@@ -15,6 +15,17 @@ const client = axios.create({
 
 export async function sendChat(request: ChatRequest): Promise<ChatResponse> {
   const { data } = await client.post<ChatResponse>('/chat', request)
+  return data
+}
+
+/**
+ * Today screen data: scores + standings. Unlike /chat, this is a fast,
+ * deterministic, no-LLM endpoint — so it gets a tight timeout rather than
+ * the multi-minute agent budget. 20s leaves room for one upstream retry
+ * cycle (the backend retries slow football-data calls with backoff).
+ */
+export async function fetchTodayData(): Promise<TodayData> {
+  const { data } = await client.get<TodayData>('/today-data', { timeout: 20_000 })
   return data
 }
 

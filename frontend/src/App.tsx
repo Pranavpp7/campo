@@ -3,7 +3,8 @@ import type { Turn } from './types'
 import { isAgentId } from './lib/agents'
 import { sendChat, describeError } from './lib/api'
 import ChatPanel from './components/ChatPanel'
-import IntelligencePanel from './components/IntelligencePanel'
+import TabBar, { type TabId } from './components/TabBar'
+import TodayScreen from './screens/TodayScreen'
 
 function createId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -13,13 +14,12 @@ function createId(): string {
 }
 
 export default function App() {
+  const [activeTab, setActiveTab] = useState<TabId>('today')
+
   // One session id per browser session, generated once.
   const [sessionId] = useState(createId)
   const [turns, setTurns] = useState<Turn[]>([])
   const [loading, setLoading] = useState(false)
-
-  // Newest first — the Intelligence Panel always reflects the latest query.
-  const latest = turns[0] ?? null
 
   async function handleSubmit(question: string) {
     const id = createId()
@@ -69,22 +69,23 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand__mark" aria-hidden="true" />
-          <span className="brand__name">CAMPO</span>
-          <span className="brand__tag">World Cup 2026 · Multi-Agent Intelligence</span>
+      <main className="screen">
+        {/*
+          Both screens stay mounted so chat history and the Today fetch survive
+          tab switches; only the active one is shown.
+        */}
+        <div className={`screen__pane${activeTab === 'today' ? '' : ' screen__pane--hidden'}`}>
+          <TodayScreen />
         </div>
-        <div className="session" title="Session ID">
-          <span className="session__label">SESSION</span>
-          <span className="session__id">{sessionId.slice(0, 8)}</span>
+        <div
+          className={`screen__pane${activeTab === 'ask' ? '' : ' screen__pane--hidden'}`}
+        >
+          {/* Fan-facing chat only — agent traces/sources/latency stay internal. */}
+          <ChatPanel turns={turns} loading={loading} onSubmit={handleSubmit} />
         </div>
-      </header>
-
-      <main className="split">
-        <ChatPanel turns={turns} loading={loading} onSubmit={handleSubmit} />
-        <IntelligencePanel turn={latest} />
       </main>
+
+      <TabBar active={activeTab} onChange={setActiveTab} />
     </div>
   )
 }

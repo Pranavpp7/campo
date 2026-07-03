@@ -23,17 +23,30 @@ export default function MessageBubble({ role, content, loading, error }: Props) 
     <div className={`bubble bubble--campo${error ? ' bubble--error' : ''}`}>
       <span className="bubble__tag">CAMPO</span>
       {loading ? (
-        <div className="bubble__thinking" role="status" aria-label="Campo is analysing">
+        <div className="bubble__thinking" role="status" aria-label="Campo is thinking">
           <span className="thinking-dot" />
           <span className="thinking-dot" />
           <span className="thinking-dot" />
-          <span className="thinking-label">Routing to specialist agents…</span>
+          <span className="thinking-label">Campo is thinking…</span>
         </div>
       ) : error ? (
         <p className="bubble__error-text">{content}</p>
       ) : (
         <div className="markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              // Wide tables (travel breakdowns etc.) scroll inside their own
+              // container instead of stretching the conversation column.
+              table: ({ node: _node, ...props }) => (
+                <div className="table-wrap">
+                  <table {...props} />
+                </div>
+              ),
+            }}
+          >
+            {content}
+          </ReactMarkdown>
         </div>
       )}
     </div>

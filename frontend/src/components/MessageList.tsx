@@ -1,11 +1,23 @@
 import type { Turn } from '../types'
 import MessageBubble from './MessageBubble'
 
-const EXAMPLES = [
-  'Tell me about the Morocco vs Brazil match — form, injuries, who to watch.',
-  'I’m travelling to Dallas for a match. What should I know before I go?',
-  'I run a sports bar near MetLife Stadium — what should I expect on a match day?',
-  'Compare the Group D contenders and project who advances.',
+const EXAMPLES: Array<{ tag: string; text: string }> = [
+  {
+    tag: 'MATCH INTEL',
+    text: 'Tell me about the Morocco vs Brazil match — form, injuries, who to watch.',
+  },
+  {
+    tag: 'TRAVEL',
+    text: 'I’m travelling to Dallas for a match. What should I know before I go?',
+  },
+  {
+    tag: 'MATCH DAY OPS',
+    text: 'I run a sports bar near MetLife Stadium — what should I expect on a match day?',
+  },
+  {
+    tag: 'GROUPS',
+    text: 'Compare the Group D contenders and project who advances.',
+  },
 ]
 
 interface Props {
@@ -27,13 +39,14 @@ export default function MessageList({ turns, onPickExample }: Props) {
           </p>
           <ul className="examples">
             {EXAMPLES.map((example) => (
-              <li key={example}>
+              <li key={example.text}>
                 <button
                   type="button"
                   className="example-chip"
-                  onClick={() => onPickExample(example)}
+                  onClick={() => onPickExample(example.text)}
                 >
-                  {example}
+                  <span className="example-chip__tag">{example.tag}</span>
+                  {example.text}
                 </button>
               </li>
             ))}
