@@ -185,6 +185,8 @@ export default function BriefPanel({ match, onClose }: Props) {
                 {state.brief.generated_at && (
                   <span className="brief-panel__stamp">
                     {formatGeneratedAt(state.brief.generated_at)}
+                    {state.brief.generation_seconds != null &&
+                      ` · researched in ${Math.round(state.brief.generation_seconds)}s`}
                   </span>
                 )}
               </div>
@@ -216,6 +218,11 @@ export default function BriefPanel({ match, onClose }: Props) {
                         <span>
                           {c.claim}
                           {c.note && <em className="brief-claim__note"> — {c.note}</em>}
+                          {c.evidence_quote && (
+                            <span className="brief-claim__quote">
+                              “{c.evidence_quote}”
+                            </span>
+                          )}
                         </span>
                       </li>
                     ))}

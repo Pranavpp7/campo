@@ -1913,3 +1913,13 @@ td.gtable__team {
     border-left: none;
   }
 }
+
+.brief-claim__quote {
+  display: block;
+  margin-top: 3px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-strong);
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.9;
+}

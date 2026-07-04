@@ -17,13 +17,21 @@ function formatAsOf(iso: string): string {
 }
 
 /** Header reused across every load state so the brand never flickers away. */
-function TodayHeader({ asOf, onRefresh }: { asOf?: string; onRefresh?: () => void }) {
+function TodayHeader({
+  asOf,
+  competition,
+  onRefresh,
+}: {
+  asOf?: string
+  competition?: string
+  onRefresh?: () => void
+}) {
   return (
     <header className="today-header">
       <div className="brand">
         <span className="brand__mark" aria-hidden="true" />
         <span className="brand__name">CAMPO</span>
-        <span className="brand__tag">World Cup 2026 · Today</span>
+        <span className="brand__tag">{competition ?? 'Football'} · Today</span>
       </div>
       {asOf && (
         <button type="button" className="today-asof" onClick={onRefresh} title="Refresh">
@@ -130,7 +138,7 @@ export default function TodayScreen() {
     )
   }
 
-  const { matches, recent_matches, standings, as_of, errors } = state.data
+  const { matches, recent_matches, standings, as_of, competition, errors } = state.data
 
   const FAILED_LABELS: Record<string, string> = {
     today_matches: "today's matches",
@@ -141,7 +149,7 @@ export default function TodayScreen() {
 
   return (
     <div className="today">
-      <TodayHeader asOf={as_of} onRefresh={() => void load()} />
+      <TodayHeader asOf={as_of} competition={competition} onRefresh={() => void load()} />
       <div className="today__body">
         {failed.length > 0 && (
           <div className="today-warning" role="status">

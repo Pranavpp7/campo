@@ -16,7 +16,9 @@ export default function MessageList({ turns }: Props) {
           <MessageBubble
             role="campo"
             content={turn.errorMessage ?? turn.answer ?? ''}
-            loading={turn.status === 'pending'}
+            // Thinking dots only until the first streamed token lands — after
+            // that the growing answer renders live.
+            loading={turn.status === 'pending' && !turn.answer}
             error={turn.status === 'error'}
           />
         </article>

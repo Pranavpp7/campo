@@ -64,6 +64,8 @@ export interface TodayData {
   standings: GroupStanding[]
   /** When the data was actually fetched upstream — may lag `now` by the cache TTL. */
   as_of: string
+  /** Which competition this backend serves, e.g. "2026 FIFA World Cup". */
+  competition: string
   /** Per-dataset failures; the arrays for failed datasets come back empty. */
   errors: Record<string, string> | null
 }
@@ -79,6 +81,8 @@ export interface BriefClaim {
   claim: string
   verdict: 'supported' | 'unsupported'
   note: string
+  /** Verbatim evidence snippet backing a supported verdict (may be empty). */
+  evidence_quote?: string
 }
 
 export interface Brief {

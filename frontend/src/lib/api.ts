@@ -18,6 +18,67 @@ export async function sendChat(request: ChatRequest): Promise<ChatResponse> {
   return data
 }
 
+export interface StreamHandlers {
+  /** Called per model token — append to the growing answer. */
+  onToken: (text: string) => void
+  onDone: (latencyMs: number) => void
+  onError: (message: string) => void
+}
+
+/**
+ * Streaming chat via SSE over fetch (axios can't stream response bodies in
+ * the browser). Parses `data: {json}\n\n` events; the server ends the stream
+ * with a `done` or `error` event.
+ */
+export async function streamChat(request: ChatRequest, handlers: StreamHandlers): Promise<void> {
+  const response = await fetch(`${BASE_URL}/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!response.ok || !response.body) {
+    handlers.onError(`Campo returned an error (${response.status}). Try again, or check the backend logs.`)
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finished = false
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    // SSE events are separated by a blank line; keep the last partial chunk.
+    const events = buffer.split('\n\n')
+    buffer = events.pop() ?? ''
+
+    for (const event of events) {
+      const line = event.split('\n').find((l) => l.startsWith('data: '))
+      if (!line) continue
+      try {
+        const payload = JSON.parse(line.slice(6))
+        if (payload.type === 'token') handlers.onToken(payload.text)
+        else if (payload.type === 'done') {
+          finished = true
+          handlers.onDone(payload.latency_ms)
+        } else if (payload.type === 'error') {
+          finished = true
+          handlers.onError(payload.message)
+        }
+      } catch {
+        // Malformed frame — skip it; the terminal event will still arrive.
+      }
+    }
+  }
+
+  if (!finished) {
+    handlers.onError('The connection dropped before Campo finished answering. Try again.')
+  }
+}
+
 /**
  * Today screen data: scores + standings. Unlike /chat, this is a fast,
  * deterministic, no-LLM endpoint — so it gets a tight timeout rather than

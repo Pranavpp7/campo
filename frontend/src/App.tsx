@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { Turn } from './types'
-import { sendChat, describeError } from './lib/api'
+import { streamChat, describeError } from './lib/api'
 import ChatPanel from './components/ChatPanel'
 import TabBar, { type TabId } from './components/TabBar'
 import TodayScreen from './screens/TodayScreen'
@@ -12,11 +12,31 @@ function createId(): string {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+/**
+ * Stable per-browser user id, persisted in localStorage. This is what makes
+ * long-term memory (mem0) actually work: preferences extracted in one visit
+ * are recalled in the next. Falls back to a per-session id if storage is
+ * unavailable (private browsing).
+ */
+function getUserId(): string {
+  const KEY = 'campo-user-id'
+  try {
+    const existing = localStorage.getItem(KEY)
+    if (existing) return existing
+    const fresh = createId()
+    localStorage.setItem(KEY, fresh)
+    return fresh
+  } catch {
+    return createId()
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('today')
 
-  // One session id per browser session, generated once.
+  // One session id per browser session; one user id per browser, persisted.
   const [sessionId] = useState(createId)
+  const [userId] = useState(getUserId)
   const [turns, setTurns] = useState<Turn[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -33,32 +53,31 @@ export default function App() {
     setTurns((prev) => [...prev, pending])
     setLoading(true)
 
-    try {
-      const res = await sendChat({
-        session_id: sessionId,
-        message: question,
-        user_id: sessionId,
-      })
+    const patchTurn = (patch: Partial<Turn>) =>
       setTurns((prev) =>
-        prev.map((turn) =>
-          turn.id === id
-            ? {
-                ...turn,
-                answer: res.response,
-                latencyMs: res.latency_ms,
-                status: 'done',
-              }
-            : turn,
-        ),
+        prev.map((turn) => (turn.id === id ? { ...turn, ...patch } : turn)),
+      )
+
+    try {
+      // Tokens render as they arrive; the turn stays 'pending' (the thinking
+      // indicator) until the first token lands.
+      await streamChat(
+        { session_id: sessionId, message: question, user_id: userId },
+        {
+          onToken: (text) =>
+            setTurns((prev) =>
+              prev.map((turn) =>
+                turn.id === id
+                  ? { ...turn, answer: (turn.answer ?? '') + text }
+                  : turn,
+              ),
+            ),
+          onDone: (latencyMs) => patchTurn({ latencyMs, status: 'done' }),
+          onError: (message) => patchTurn({ status: 'error', errorMessage: message }),
+        },
       )
     } catch (error) {
-      setTurns((prev) =>
-        prev.map((turn) =>
-          turn.id === id
-            ? { ...turn, status: 'error', errorMessage: describeError(error) }
-            : turn,
-        ),
-      )
+      patchTurn({ status: 'error', errorMessage: describeError(error) })
     } finally {
       setLoading(false)
     }

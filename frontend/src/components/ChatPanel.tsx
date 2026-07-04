@@ -128,7 +128,7 @@ export default function ChatPanel({ turns, loading, onSubmit }: Props) {
       <div className="brand">
         <span className="brand__mark" aria-hidden="true" />
         <span className="brand__name">CAMPO</span>
-        <span className="brand__tag">World Cup 2026 · Ask</span>
+        <span className="brand__tag">Ask the match desk</span>
       </div>
     </header>
   )
@@ -139,13 +139,13 @@ export default function ChatPanel({ turns, loading, onSubmit }: Props) {
         {header}
         <div className="hero">
           <div className="hero__inner">
-            <p className="hero__eyebrow">THREE SPECIALIST AGENTS · ONE BRIEFING</p>
+            <p className="hero__eyebrow">RESEARCHED · WRITTEN · FACT-CHECKED</p>
             <h2 className="hero__headline">
               Ask the <span className="hero__accent">match desk.</span>
             </h2>
             <p className="hero__lede">
-              Match intelligence, travel logistics and local business insight —
-              one briefing. Start with a question.
+              Answers grounded in verified match briefs, live data and web
+              research. Start with a question.
             </p>
             {composer}
             <ul className="examples">
