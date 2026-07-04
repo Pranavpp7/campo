@@ -42,11 +42,11 @@ dependencies = [
 where = ["."]
 include = [
     "agents*",
+    "briefs*",
     "tools*",
     "prompts*",
     "memory*",
     "llm*",
-    "qdrant*",
     "evals*",
     "api*",
     "mcp_server*",

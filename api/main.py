@@ -1,16 +1,78 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import asyncio
+import os
 import time
 
 from agents.orchestrator import run_orchestrator
 
 load_dotenv()
 
-app = FastAPI(title="Campo API", version="1.0.0")
+# ── Scheduled brief generation ────────────────────────────────────────────────
+# Pre-generates briefs for today's matches so fans open a ready brief instead
+# of watching a ~1-minute pipeline run. Off by default (and in tests) — enable
+# with BRIEFS_AUTO_GENERATE=true.
+
+BRIEF_SCAN_INTERVAL_MINUTES = 30
+
+
+async def auto_generate_briefs():
+    """Scan today's fixtures and generate any missing briefs, one at a time —
+    each brief already runs 4 parallel workers, so parallelism across matches
+    would just trip free-tier LLM rate limits."""
+    from tools.football_data import get_wc_today_matches_data
+    from briefs.store import get_brief, try_acquire_generation_lock
+    from briefs.pipeline import generate_and_store
+
+    try:
+        matches, _ = await asyncio.to_thread(get_wc_today_matches_data)
+    except Exception as e:
+        print(f"[briefs-scheduler] could not fetch today's matches: {e}")
+        return
+
+    for m in matches:
+        match_id = m.get("id")
+        if match_id is None or m.get("status") == "FINISHED":
+            continue
+        record = await get_brief(match_id)
+        if record and record.get("status") == "ready":
+            continue
+        if not await try_acquire_generation_lock(match_id):
+            continue  # another worker (or a manual trigger) is already on it
+        home = (m.get("home") or {}).get("name")
+        away = (m.get("away") or {}).get("name")
+        print(f"[briefs-scheduler] generating brief for {home} vs {away} ({match_id})")
+        await generate_and_store(match_id)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = None
+    if os.getenv("BRIEFS_AUTO_GENERATE", "false").lower() == "true":
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(
+            auto_generate_briefs,
+            "interval",
+            minutes=BRIEF_SCAN_INTERVAL_MINUTES,
+            next_run_time=datetime.now(timezone.utc),  # also run once at startup
+        )
+        scheduler.start()
+        print(
+            f"[briefs-scheduler] auto-generation on — scanning every "
+            f"{BRIEF_SCAN_INTERVAL_MINUTES} minutes"
+        )
+    yield
+    if scheduler:
+        scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title="Campo API", version="1.0.0", lifespan=lifespan)
 
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Browsers treat localhost and 127.0.0.1 as distinct origins, so allow both —
@@ -45,6 +107,7 @@ class TeamOut(BaseModel):
     crest: str | None = None
 
 class MatchOut(BaseModel):
+    id: int | None = None
     utc_date: str | None = None
     home: TeamOut
     away: TeamOut
@@ -252,6 +315,79 @@ async def standings_data():
             as_of=datetime.now(timezone.utc).isoformat(),
             error=str(e),
         )
+
+
+# ── Pre-match briefs ──────────────────────────────────────────────────────────
+# The verified-brief pipeline (briefs/) is Campo's real multi-agent system:
+# deterministic planner -> 4 parallel research workers -> writer -> verifier.
+# These endpoints only read the store and kick background generation — the
+# request path never blocks on the ~1-minute pipeline.
+
+@app.get("/briefs/today")
+async def briefs_today():
+    """Today's matches annotated with each one's brief status — lets the Today
+    screen render brief affordances without N per-match requests."""
+    from tools.football_data import get_wc_today_matches_data
+    from briefs.store import get_brief, is_generating
+
+    matches, fetched_at = await asyncio.to_thread(get_wc_today_matches_data)
+
+    annotated = []
+    for m in matches:
+        match_id = m.get("id")
+        brief_status = "none"
+        if match_id is not None:
+            record = await get_brief(match_id)
+            if record:
+                brief_status = record.get("status", "none")
+            elif await is_generating(match_id):
+                brief_status = "generating"
+        annotated.append({**m, "brief_status": brief_status})
+
+    return {"matches": annotated, "as_of": fetched_at}
+
+
+@app.get("/briefs/{match_id}")
+async def get_match_brief(match_id: int):
+    """Fetch a brief. `status` is one of ready | failed | generating | none."""
+    from briefs.store import get_brief, is_generating
+
+    record = await get_brief(match_id)
+    if record:
+        return record
+    if await is_generating(match_id):
+        return {"match_id": match_id, "status": "generating"}
+    return {"match_id": match_id, "status": "none"}
+
+
+@app.post("/briefs/{match_id}/generate", status_code=202)
+async def trigger_brief_generation(match_id: int, force: bool = False):
+    """Kick off background generation for a match (idempotent).
+
+    Returns the existing brief if one is ready and `force` is not set;
+    otherwise 202 + generating. Generation runs as a fire-and-forget task —
+    progress is observed by polling GET /briefs/{match_id}.
+    """
+    from briefs.store import get_brief, try_acquire_generation_lock
+    from briefs.pipeline import generate_and_store
+
+    record = await get_brief(match_id)
+    if record and record.get("status") == "ready" and not force:
+        return record
+
+    if not await try_acquire_generation_lock(match_id):
+        return {"match_id": match_id, "status": "generating"}
+
+    task = asyncio.create_task(generate_and_store(match_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+    return {"match_id": match_id, "status": "generating"}
+
+
+# Keep strong references to fire-and-forget tasks — asyncio only holds weak
+# ones, so an unreferenced task can be garbage-collected mid-run.
+_background_tasks: set = set()
 
 
 @app.get("/health")

@@ -12,7 +12,10 @@ load_dotenv()
 API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": API_KEY}
-WC_CODE = "WC"  # 2026 FIFA World Cup competition code
+# Competition to serve. Defaults to the 2026 FIFA World Cup; point it at any
+# football-data.org competition code (PL, CL, ...) to reuse Campo for another
+# tournament or league season.
+WC_CODE = os.getenv("COMPETITION_CODE", "WC")
 
 # Reference timezone for what counts as "today". Venues span UTC-4 (East
 # Coast) to UTC-7 (Pacific); UTC-5 (central) is the compromise that keeps an
@@ -257,6 +260,7 @@ def _shape_match(m: dict) -> dict:
     away_team = m.get("awayTeam", {})
     ft = m.get("score", {}).get("fullTime", {})
     return {
+        "id": m.get("id"),
         "utc_date": m.get("utcDate"),
         "home": {"name": home_team.get("name"), "crest": home_team.get("crest")},
         "away": {"name": away_team.get("name"), "crest": away_team.get("crest")},
@@ -391,3 +395,33 @@ def get_wc_standings_data() -> tuple[list[dict], str]:
 
     fetched_at = _set_cached(cache_key, result, TTL_STANDINGS_DATA)
     return result, fetched_at
+
+
+TTL_MATCH_DETAIL = 10 * 60  # 10 minutes — single-match detail for brief generation
+
+
+def get_match_data(match_id: int) -> tuple[dict, str]:
+    """Structured detail for a single match by football-data.org id.
+
+    Used by the brief pipeline to anchor a brief to a concrete fixture.
+    Returns the `_shape_match` shape plus `stage` and `referees`.
+    Raises on unknown id / upstream failure — callers decide how to surface it.
+    """
+    cache_key = f"match_data_{match_id}"
+    entry = _get_cached_entry(cache_key)
+    if entry is not None:
+        return entry["data"], entry["fetched_at"]
+
+    m = _api_get(f"matches/{match_id}")
+    # The single-match endpoint nests the payload under "match" on some plans
+    # and returns it flat on others — handle both.
+    m = m.get("match", m)
+
+    shaped = _shape_match(m)
+    shaped["stage"] = m.get("stage")
+    shaped["referees"] = [
+        r.get("name") for r in m.get("referees", []) if r.get("name")
+    ]
+
+    fetched_at = _set_cached(cache_key, shaped, TTL_MATCH_DETAIL)
+    return shaped, fetched_at
