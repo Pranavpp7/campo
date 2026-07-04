@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { TodayData } from '../types'
+import type { Match, TodayData } from '../types'
 import { fetchTodayData, describeError } from '../lib/api'
 import MatchCard from '../components/MatchCard'
 import GroupTable from '../components/GroupTable'
+import BriefPanel from '../components/BriefPanel'
 
 type LoadState =
   | { status: 'loading' }
@@ -67,6 +68,8 @@ function StandingsSkeletons() {
 
 export default function TodayScreen() {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
+  // Match whose brief panel is open, if any.
+  const [briefMatch, setBriefMatch] = useState<Match | null>(null)
 
   const load = useCallback(async () => {
     setState({ status: 'loading' })
@@ -159,7 +162,7 @@ export default function TodayScreen() {
           ) : (
             <div className="match-row">
               {matches.map((m, i) => (
-                <MatchCard key={`${m.utc_date}-${i}`} match={m} />
+                <MatchCard key={`${m.utc_date}-${i}`} match={m} onBrief={setBriefMatch} />
               ))}
             </div>
           )}
@@ -193,6 +196,10 @@ export default function TodayScreen() {
           )}
         </section>
       </div>
+
+      {briefMatch && (
+        <BriefPanel match={briefMatch} onClose={() => setBriefMatch(null)} />
+      )}
     </div>
   )
 }

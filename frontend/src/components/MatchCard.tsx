@@ -3,6 +3,8 @@ import Crest from './Crest'
 
 interface Props {
   match: Match
+  /** When provided (and the match has an id), renders the Match Brief button. */
+  onBrief?: (match: Match) => void
 }
 
 /** Local kickoff time, e.g. "18:00". Falls back to "TBD" on a bad date. */
@@ -53,8 +55,10 @@ function TeamLine({
   )
 }
 
-export default function MatchCard({ match }: Props) {
+export default function MatchCard({ match, onBrief }: Props) {
   const played = match.status === 'LIVE' || match.status === 'FINISHED'
+  // Briefs are pre-match products — offer them until the final whistle.
+  const briefable = onBrief && match.id != null && match.status !== 'FINISHED'
   const hs = match.home_score
   const as = match.away_score
   const homeWin = played && hs != null && as != null && hs > as
@@ -76,6 +80,16 @@ export default function MatchCard({ match }: Props) {
       </div>
 
       {match.venue && <footer className="match-card__venue">{match.venue}</footer>}
+
+      {briefable && (
+        <button
+          type="button"
+          className="match-card__brief-btn"
+          onClick={() => onBrief(match)}
+        >
+          Match Brief
+        </button>
+      )}
     </article>
   )
 }

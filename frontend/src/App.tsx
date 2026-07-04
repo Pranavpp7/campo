@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import type { Turn } from './types'
-import { isAgentId } from './lib/agents'
 import { sendChat, describeError } from './lib/api'
 import ChatPanel from './components/ChatPanel'
 import TabBar, { type TabId } from './components/TabBar'
@@ -27,7 +26,6 @@ export default function App() {
       id,
       question,
       answer: null,
-      agentsUsed: [],
       latencyMs: null,
       status: 'pending',
     }
@@ -41,14 +39,12 @@ export default function App() {
         message: question,
         user_id: sessionId,
       })
-      const agentsUsed = res.agents_used.filter(isAgentId)
       setTurns((prev) =>
         prev.map((turn) =>
           turn.id === id
             ? {
                 ...turn,
                 answer: res.response,
-                agentsUsed,
                 latencyMs: res.latency_ms,
                 status: 'done',
               }
