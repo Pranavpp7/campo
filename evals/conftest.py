@@ -1,15 +1,19 @@
 # evals/conftest.py
+import os
 import pytest
 import pytest_asyncio
 import asyncio
 import uuid
 import httpx
+from dotenv import load_dotenv
 from redis.asyncio import Redis
+
+load_dotenv()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 API_BASE_URL = "http://localhost:8000"
 REDIS_URL = "redis://localhost:6379"
-QDRANT_URL = "http://localhost:6333"
+QDRANT_URL = f"http://localhost:{os.getenv('QDRANT_PORT', '6335')}"
 
 # ── Pytest configuration ───────────────────────────────────────────────────────
 def pytest_configure(config):

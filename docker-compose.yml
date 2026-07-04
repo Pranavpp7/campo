@@ -16,8 +16,10 @@ services:
     container_name: campo-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # REST API — used by the app
-      - "6334:6334"   # gRPC (available, not currently used)
+      # Host ports 6335/6336 — 6333/6334 collide with other local Qdrant
+      # containers (e.g. vendorshield). Keep QDRANT_PORT in .env in sync.
+      - "6335:6333"   # REST API — used by the app
+      - "6336:6334"   # gRPC (available, not currently used)
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
