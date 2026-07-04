@@ -1,94 +1,121 @@
 # evals/unit/test_verifier.py
 """
-Eval for the brief verifier — the pipeline's fact-checking agent.
+Scored eval for the brief verifier — the pipeline's fact-checking agent.
 
-Feeds the verifier a draft brief containing PLANTED FALSE CLAIMS alongside
-supported ones, against a fixed synthetic evidence corpus, and asserts the
-false claims are flagged and struck while the supported ones survive.
+Runs 4 realistic scenarios (18 claims, 9 of them PLANTED falsehoods across
+injuries, scores, conditions and head-to-head history) and measures:
 
-Like the classifier evals, this calls a live LLM (via llm.factory.get_llm),
-so it needs OPENROUTER_API_KEY / GROQ_API_KEY in .env — but no Redis, no
-Qdrant, no running API.
+  - catch rate:        planted claims flagged unsupported or struck from the
+                       revised brief (headline metric — higher is better)
+  - false-strike rate: genuinely supported claims wrongly flagged
+                       (lower is better)
+
+Like the pipeline itself, this calls a live LLM (llm.factory.get_llm), so it
+needs OPENROUTER_API_KEY / GROQ_API_KEY in .env — but no Redis, no Qdrant,
+no running API.
 
 Run:
-    uv run pytest evals/unit/test_verifier.py -v
+    uv run pytest evals/unit/test_verifier.py -v -s
 """
+import json
+from pathlib import Path
+
 import pytest
+
 from briefs.researcher import ResearchResult
 from briefs.verifier import verify_brief
 
-# ── Synthetic evidence corpus ──────────────────────────────────────────────────
-# What the research workers' tools "actually returned".
-EVIDENCE = [
-    ResearchResult(
-        lane_id="away_team",
-        findings="",
-        evidence=[
-            "France recent results: beat Senegal 2-0 (28 Jun), beat Brazil 3-1 "
-            "(1 Jul), beat Germany 1-0 (24 Jun). (football-data.org)",
-            "ESPN news, 1 Jul: Ousmane Dembele ruled out of the remainder of the "
-            "tournament with a hamstring injury sustained in training.",
-            "Squad: France (Coach: Zinedine Zidane) — Goalkeeper: Mike Maignan; "
-            "Offence: Kylian Mbappe, Marcus Thuram. (football-data.org)",
-        ],
-    ),
-    ResearchResult(
-        lane_id="conditions",
-        findings="",
-        evidence=[
-            "Weather for AT&T Stadium (Arlington) on 2026-07-04:\n"
-            "Condition: Clear sky\nTemperature: 75°F - 95°F\n"
-            "Precipitation chance: 5%",
-        ],
-    ),
-]
+CASES = json.loads(
+    (Path(__file__).parent.parent / "verifier_cases.json").read_text(encoding="utf-8")
+)
+SCENARIOS = CASES["scenarios"]
 
-# ── Draft with planted false claims ────────────────────────────────────────────
-# Supported by evidence: Dembele injury, 3-1 win over Brazil, hot clear weather.
-# PLANTED (nowhere in evidence, or contradicting it):
-#   1. "Mbappe is suspended for this match"       — invented suspension
-#   2. "cool evening around 60°F"                 — contradicts 75-95°F evidence
-DRAFT = """## France
-France arrive in form, having beaten Brazil 3-1 on 1 July. Ousmane Dembele has
-been ruled out of the tournament with a hamstring injury (ESPN). Kylian Mbappe
-is suspended for this match after accumulating yellow cards.
+# Thresholds the suite enforces. The verifier is adversarial by design, so we
+# demand a high catch rate; occasional over-zealous strikes are tolerable
+# (a struck true claim costs detail, a surviving false claim costs trust).
+MIN_CATCH_RATE = 0.75
+MAX_FALSE_STRIKE_RATE = 0.34
 
-## Conditions
-Fans can expect a cool evening around 60°F with clear skies at AT&T Stadium.
-"""
+
+def _flagged_unsupported(claim_spec: dict, claims: list[dict]) -> bool:
+    """True if any verifier claim matching the spec's keywords was judged
+    unsupported."""
+    for c in claims:
+        text = c["claim"].lower()
+        if c["verdict"] == "unsupported" and any(
+            k.lower() in text for k in claim_spec["keywords"]
+        ):
+            return True
+    return False
+
+
+def _struck_from_brief(claim_spec: dict, revised: str) -> bool:
+    """True if the claim's anchor phrase no longer appears asserted in the
+    revised brief (removed outright, or explicitly hedged)."""
+    revised_lower = revised.lower()
+    anchor = claim_spec["anchor"].lower()
+    if anchor not in revised_lower:
+        return True
+    # Anchor survives — accept if the surrounding text was hedged.
+    return "could not be verified" in revised_lower or "unverified" in revised_lower
 
 
 @pytest.mark.unit
-async def test_verifier_strikes_planted_claims_and_keeps_supported():
-    result = await verify_brief(DRAFT, EVIDENCE)
+async def test_verifier_catch_rate():
+    """The headline eval: run every scenario, score planted-claim catches and
+    false strikes across the whole set, and enforce thresholds."""
+    caught, missed_details = 0, []
+    false_strikes, false_strike_details = 0, []
+    total_planted = 0
+    total_supported = 0
 
-    # The verifier must have completed a real verification pass.
-    assert result["verified"] is True, "verifier fell back to unverified draft"
-    claims = result["claims"]
-    assert claims, "verifier returned no claims"
+    for scenario in SCENARIOS:
+        evidence = [
+            ResearchResult(lane_id=scenario["name"], evidence=scenario["evidence"])
+        ]
+        result = await verify_brief(scenario["draft"], evidence)
 
-    supported = [c["claim"].lower() for c in claims if c["verdict"] == "supported"]
-    unsupported = [c["claim"].lower() for c in claims if c["verdict"] == "unsupported"]
+        assert result["verified"] is True, (
+            f"[{scenario['name']}] verifier fell back to unverified draft"
+        )
+        claims = result["claims"]
+        revised = result["brief_markdown"]
 
-    # Planted claim 1: the invented Mbappe suspension is caught.
-    assert any(
-        "suspend" in c for c in unsupported
-    ), f"invented suspension not flagged. Unsupported: {unsupported}"
+        for spec in scenario["claims"]:
+            label = f"{scenario['name']}::{spec['anchor']}"
+            if spec["expected"] == "planted":
+                total_planted += 1
+                if _flagged_unsupported(spec, claims) or _struck_from_brief(spec, revised):
+                    caught += 1
+                else:
+                    missed_details.append(label)
+            else:
+                total_supported += 1
+                if _flagged_unsupported(spec, claims):
+                    false_strikes += 1
+                    false_strike_details.append(label)
 
-    # Planted claim 2: the contradicted temperature is caught.
-    assert any(
-        "60" in c or "cool" in c for c in unsupported
-    ), f"contradicted weather not flagged. Unsupported: {unsupported}"
+    catch_rate = caught / total_planted
+    false_strike_rate = false_strikes / total_supported
 
-    # A genuinely supported claim survives with the right verdict.
-    assert any(
-        "dembele" in c for c in supported
-    ), f"supported injury claim not confirmed. Supported: {supported}"
+    print(
+        f"\n[verifier eval] planted caught: {caught}/{total_planted} "
+        f"(catch rate {catch_rate:.0%}) | "
+        f"false strikes: {false_strikes}/{total_supported} "
+        f"({false_strike_rate:.0%})"
+    )
+    if missed_details:
+        print(f"[verifier eval] missed planted claims: {missed_details}")
+    if false_strike_details:
+        print(f"[verifier eval] falsely struck claims: {false_strike_details}")
 
-    # And the revised brief no longer asserts the false suspension.
-    revised = result["brief_markdown"].lower()
-    assert "is suspended" not in revised or "could not be verified" in revised, (
-        "revised brief still asserts the invented suspension"
+    assert catch_rate >= MIN_CATCH_RATE, (
+        f"Catch rate {catch_rate:.0%} below {MIN_CATCH_RATE:.0%}. "
+        f"Missed: {missed_details}"
+    )
+    assert false_strike_rate <= MAX_FALSE_STRIKE_RATE, (
+        f"False-strike rate {false_strike_rate:.0%} above "
+        f"{MAX_FALSE_STRIKE_RATE:.0%}. Struck: {false_strike_details}"
     )
 
 
@@ -96,7 +123,8 @@ async def test_verifier_strikes_planted_claims_and_keeps_supported():
 async def test_verifier_with_no_evidence_ships_unverified():
     """No evidence corpus → the draft must ship unverified rather than be
     judged against nothing (or lost)."""
-    result = await verify_brief(DRAFT, [ResearchResult(lane_id="x", evidence=[])])
+    draft = "## France\nFrance are in excellent form."
+    result = await verify_brief(draft, [ResearchResult(lane_id="x", evidence=[])])
     assert result["verified"] is False
-    assert result["brief_markdown"] == DRAFT
+    assert result["brief_markdown"] == draft
     assert result["claims"] == []

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend — pure unit evals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Only the pure, deterministic evals run in CI — no API keys, no
+      # services. LLM-dependent evals (verifier catch-rate, GEval e2e) stay
+      # local/manual because they need provider keys and a running stack.
+      - name: Run planner + memory pre-filter evals
+        run: uv run pytest evals/unit/test_planner.py evals/unit/test_memory_prefilter.py -v --no-header
+
+  frontend:
+    name: Frontend — typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck and build
+        run: npm run build

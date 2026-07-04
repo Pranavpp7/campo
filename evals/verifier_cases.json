@@ -1,0 +1,64 @@
+{
+  "_comment": "Scored eval scenarios for the brief verifier. Each scenario has an evidence corpus (simulated raw tool outputs), a draft containing a mix of supported and PLANTED false claims, and per-claim checks. 'keywords' identify the claim among the verifier's extracted claims (case-insensitive substring, any match). 'anchor' is a distinctive phrase from the draft used to check whether the claim survived into the revised brief.",
+  "scenarios": [
+    {
+      "name": "injuries_and_availability",
+      "evidence": [
+        "ESPN news, 1 Jul: Ousmane Dembele ruled out of the remainder of the tournament with a hamstring injury sustained in training.",
+        "Squad: France (Coach: Zinedine Zidane) - Goalkeeper: Mike Maignan; Defence: Ibrahima Konate, Theo Hernandez; Offence: Kylian Mbappe, Marcus Thuram. (football-data.org)",
+        "Team news search result: France manager confirmed on Thursday that Theo Hernandez trained fully and is available for selection."
+      ],
+      "draft": "## France\nFrance are without Ousmane Dembele, ruled out of the tournament with a hamstring injury (ESPN). Theo Hernandez trained fully and is available. Kylian Mbappe is suspended for this match after two yellow cards. Goalkeeper Mike Maignan is also a doubt with a wrist problem.",
+      "claims": [
+        {"keywords": ["dembele"], "anchor": "Dembele", "expected": "supported"},
+        {"keywords": ["hernandez"], "anchor": "trained fully", "expected": "supported"},
+        {"keywords": ["suspend", "yellow"], "anchor": "is suspended for this match", "expected": "planted"},
+        {"keywords": ["maignan", "wrist"], "anchor": "wrist problem", "expected": "planted"}
+      ]
+    },
+    {
+      "name": "scores_and_results",
+      "evidence": [
+        "Match results (football-data.org): 28 Jun - Argentina 2-0 Mexico; 1 Jul - Argentina 3-1 Netherlands (Round of 32); 24 Jun - Argentina 1-1 Chile.",
+        "Standings, Group F: 1. Argentina 7 pts (+5 GD), 2. Mexico 4 pts, 3. Chile 3 pts, 4. Denmark 1 pt."
+      ],
+      "draft": "## Argentina\nArgentina topped Group F with 7 points and a +5 goal difference. They beat the Netherlands 3-1 in the Round of 32. Lionel Messi scored a hat-trick in that win. Argentina have kept four consecutive clean sheets coming into this match.",
+      "claims": [
+        {"keywords": ["7 points", "group f", "topped"], "anchor": "7 points", "expected": "supported"},
+        {"keywords": ["3-1", "netherlands"], "anchor": "3-1", "expected": "supported"},
+        {"keywords": ["hat-trick", "messi"], "anchor": "hat-trick", "expected": "planted"},
+        {"keywords": ["clean sheet"], "anchor": "clean sheets", "expected": "planted"}
+      ]
+    },
+    {
+      "name": "conditions_and_venue",
+      "evidence": [
+        "Weather for Kansas City on 2026-07-11:\nCondition: Thunderstorm\nTemperature: 74°F - 91°F\nPrecipitation chance: 65%",
+        "Venue search result: Arrowhead Stadium in Kansas City is an open-air venue with a natural grass surface installed for the World Cup, capacity roughly 76,000.",
+        "Kickoff listing (football-data.org): 2026-07-11T20:00:00Z."
+      ],
+      "draft": "## Conditions\nThe quarter-final is at Arrowhead Stadium, Kansas City, an open-air venue holding roughly 76,000. Thunderstorms are forecast with a 65% chance of precipitation and highs of 91°F. The stadium's retractable roof will be closed if storms arrive. Kickoff is 20:00 UTC, which is mid-afternoon locally. The referee will be Szymon Marciniak of Poland.",
+      "claims": [
+        {"keywords": ["open-air", "76,000"], "anchor": "76,000", "expected": "supported"},
+        {"keywords": ["thunderstorm", "65%"], "anchor": "65%", "expected": "supported"},
+        {"keywords": ["retractable roof"], "anchor": "retractable roof", "expected": "planted"},
+        {"keywords": ["marciniak", "referee"], "anchor": "Marciniak", "expected": "planted"}
+      ]
+    },
+    {
+      "name": "history_and_matchup",
+      "evidence": [
+        "Head-to-head search result (Sports Mole): England and Spain have met 27 times; England 14 wins, Spain 10, 3 draws. Most recent competitive meeting: Euro 2024 final, Spain 2-1 England.",
+        "Analysis search result (The Athletic): Spain dominate possession under their current system, averaging 68% in this tournament; England have been more direct, creating most chances from set pieces."
+      ],
+      "draft": "## The Matchup\nEngland and Spain have met 27 times, with England ahead 14 wins to 10 (Sports Mole). Spain won their most recent competitive meeting, the Euro 2024 final, 2-1. Spain average 68% possession in this tournament (The Athletic). England have won the last three meetings between the sides. Spain have never lost a World Cup knockout match in normal time.",
+      "claims": [
+        {"keywords": ["27 times", "14 wins"], "anchor": "27 times", "expected": "supported"},
+        {"keywords": ["euro 2024", "2-1"], "anchor": "Euro 2024", "expected": "supported"},
+        {"keywords": ["68%"], "anchor": "68%", "expected": "supported"},
+        {"keywords": ["last three meetings"], "anchor": "last three meetings", "expected": "planted"},
+        {"keywords": ["never lost", "normal time"], "anchor": "never lost", "expected": "planted"}
+      ]
+    }
+  ]
+}
