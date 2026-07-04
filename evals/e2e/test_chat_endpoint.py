@@ -106,17 +106,17 @@ def assert_no_betting(response: str):
 # ── Tests ─────────────────────────────────────────────────────────────────────
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_scout_match_intelligence():
+async def test_match_intelligence():
     """
-    Scout returns relevant match intelligence for Morocco vs Brazil.
-    Validates: routing → safety → DeepEval GEval quality score.
+    Campo returns relevant match intelligence for Morocco vs Brazil.
+    Validates: structural → safety → DeepEval GEval quality score.
     """
     question = "Tell me about the Morocco vs Brazil match — form, key players, and tactics."
     result = await post_chat(question)
 
-    # 1. Structural
-    assert "scout" in result["agents_used"], (
-        f"Expected scout in agents_used, got: {result['agents_used']}"
+    # 1. Structural — the single chat agent ran successfully
+    assert result["agents_used"] == ["campo"], (
+        f"Expected ['campo'] in agents_used, got: {result['agents_used']}"
     )
 
     # 2. Safety
@@ -126,7 +126,7 @@ async def test_scout_match_intelligence():
     test_case = LLMTestCase(input=question, actual_output=result["response"])
     metric = relevance_metric("match intelligence")
     metric.measure(test_case)
-    print(f"\n[Scout] GEval score: {metric.score:.2f} | Reason: {metric.reason}")
+    print(f"\n[Match intel] GEval score: {metric.score:.2f} | Reason: {metric.reason}")
     assert metric.score >= RELEVANCE_THRESHOLD, (
         f"GEval relevance {metric.score:.2f} < {RELEVANCE_THRESHOLD}. "
         f"Reason: {metric.reason}"
@@ -135,16 +135,16 @@ async def test_scout_match_intelligence():
 
 @pytest.mark.e2e
 @pytest.mark.asyncio
-async def test_localpulse_business_intelligence():
+async def test_operational_question():
     """
-    Campo returns relevant operational advice for bar owners near venues.
-    LocalPulse is the primary agent but Scout may substitute under rate limits.
+    Campo returns relevant operational advice for bar owners near venues —
+    a question outside pure match intelligence, exercising the weather and
+    fixture tools together.
     Validates: safety + DeepEval GEval quality score.
     """
     question = "I run a bar near AT&T Stadium in Dallas. What should I prepare for on match day?"
     result = await post_chat(question)
 
-    # 1. At least one agent must have run or response must exist
     assert result["response"], (
         f"Empty response received. agents_used: {result['agents_used']}"
     )
@@ -156,7 +156,7 @@ async def test_localpulse_business_intelligence():
     test_case = LLMTestCase(input=question, actual_output=result["response"])
     metric = relevance_metric("business intelligence for venue operators")
     metric.measure(test_case)
-    print(f"\n[LocalPulse] GEval score: {metric.score:.2f} | Reason: {metric.reason}")
+    print(f"\n[Operational] GEval score: {metric.score:.2f} | Reason: {metric.reason}")
     assert metric.score >= RELEVANCE_THRESHOLD, (
         f"GEval relevance {metric.score:.2f} < {RELEVANCE_THRESHOLD}. "
         f"Reason: {metric.reason}"

@@ -1,259 +1,42 @@
-import json
 import asyncio
-from datetime import datetime, timezone
-from pydantic import BaseModel, Field
-from langgraph.graph import StateGraph, END
-from langchain_core.messages import HumanMessage
-from llm.factory import get_classifier_llm, get_synthesis_llm
-from agents.scout import run_scout
-from agents.logistics import run_logistics
-from agents.localpulse import run_localpulse
-from memory.session_store import add_turn
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-VALID_AGENTS = {"scout", "logistics", "localpulse"}
+from agents.campo import run_campo, stream_campo
+from memory.session_store import add_turn
+from tools.competitions import date_context
+
+# Chat is a single all-tools agent (see agents/campo.py for why). This module
+# keeps the /chat contract and owns the per-request plumbing the old
+# orchestrator hoisted out of the agents: one memory load, one memory
+# extraction, one history write per exchange.
+
 AGENT_TIMEOUT_SECONDS = 120
 
-AGENT_RUNNERS = {
-    "scout": run_scout,
-    "logistics": run_logistics,
-    "localpulse": run_localpulse,
-}
 
-AGENT_DISPLAY_NAMES = {
-    "scout": "Scout (Match Intelligence)",
-    "logistics": "Logistics (Travel Planning)",
-    "localpulse": "LocalPulse (Business Intelligence)",
-}
-
-# ── State Schema ──────────────────────────────────────────────────────────────
-class OrchestratorState(BaseModel):
-    """State passed between LangGraph nodes."""
-    message: str = Field(description="The user's original message")
-    session_id: str = Field(description="Session ID for short-term memory")
-    user_id: str = Field(default="default", description="User ID for long-term memory")
-    agents: list[str] = Field(default_factory=list, description="Classified agent names")
-    memory_context: str | None = Field(default=None, description="Long-term memory context, loaded once per request")
-    agent_results: dict[str, dict] = Field(default_factory=dict, description="Results keyed by agent name")
-    response: str = Field(default="", description="Final synthesized response")
-    agents_used: list[str] = Field(default_factory=list, description="Agents that ran successfully")
-    error: str | None = Field(default=None, description="Top-level error if orchestration failed")
-
-# ── Prompts ───────────────────────────────────────────────────────────────────
-CLASSIFY_PROMPT = """You are an intent classifier for Campo, a multi-agent World Cup 2026 assistant.
-
-Available agents:
-- scout: Match intelligence — team form, squad news, injuries, head-to-head,
-  tactical analysis, and (only if explicitly requested) match outcome predictions.
-- logistics: Fan travel planning — getting to matches, venue weather,
-  accommodation areas, multi-match itinerary feasibility. Use this when
-  the user mentions traveling to, attending, or getting to a match.
-- localpulse: Business intelligence for food & beverage / hospitality operators
-  near venues — expected demand, weather-informed operations, local regulations.
-
-Given the user's message, decide which agent(s) are relevant. A message can need
-multiple agents (e.g. a fan traveling to a match who also runs a bar near a venue
-needs scout + logistics + localpulse).
-
-Respond with a JSON array of agent names from ["scout", "logistics", "localpulse"].
-Choose only the agents genuinely relevant to the message — don't include one
-"just in case".
-
-User message: {message}
-
-Respond with JSON only, no other text.
-"""
-
-SYNTHESIS_PROMPT = """You are the synthesis layer of Campo, a multi-agent World Cup 2026 assistant.
-
-You have received responses from one or more specialist agents. Your job is to
-combine them into a single, coherent, well-structured response for the user.
-
-Rules:
-1. Preserve all specific facts, numbers, names, and citations from agent outputs —
-   do NOT summarize away concrete detail (injury names, weather figures, permit
-   deadlines, distances, etc.)
-2. Eliminate redundancy — if multiple agents mention the same fact (e.g. venue
-   name, match date), state it once.
-3. Structure clearly — use headers or clear transitions if the response covers
-   multiple domains (e.g. match intel + travel + business).
-4. Do not invent any information not present in the agent outputs.
-5. If an agent returned an error or timed out, note briefly that that area of
-   information was unavailable, and continue with what is available.
-6. Match the user's register — if they asked casually, respond conversationally;
-   if they asked in detail, give full detail.
-
-User message:
-{message}
-
-Agent outputs:
-{agent_outputs}
-
-Write a single, unified response now.
-"""
-
-# ── Standalone classify function (testable without the full graph) ─────────────
-async def classify_intent(message: str) -> list[str]:
-    """
-    Classify which agents are relevant to the user's message.
-    Extracted as a standalone function so it can be tested independently
-    of the LangGraph graph without triggering heavy service initialization.
-    """
-    # Guard: empty or whitespace input skips the LLM and defaults to scout
-    if not message or not message.strip():
-        return ["scout"]
-    try:
-        llm = get_classifier_llm()
-        prompt = CLASSIFY_PROMPT.format(message=message)
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        raw = response.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        agents = json.loads(raw.strip())
-        # Dedupe (preserving order) — a duplicate from the LLM would otherwise
-        # dispatch the same agent twice and silently drop one result.
-        agents = list(dict.fromkeys(a for a in agents if a in VALID_AGENTS))
-        return agents if agents else ["scout"]
-    except Exception as e:
-        print(f"Classification error, defaulting to scout: {e}")
-        return ["scout"]
-
-
-# ── Nodes ─────────────────────────────────────────────────────────────────────
-async def classify_node(state: OrchestratorState) -> OrchestratorState:
-    """Thin wrapper — delegates to classify_intent for testability."""
-    agents = await classify_intent(state.message)
-    return state.model_copy(update={"agents": agents})
-
-
-async def dispatch_node(state: OrchestratorState) -> OrchestratorState:
-    """Dispatch to all classified agents in parallel."""
-    # Lazy import — keeps mem0/HuggingFace/Qdrant from initializing at module
-    # load time, which caused a 102-second hang when tests imported this module.
-    from memory.memory_manager import build_context_message, extract_and_save
-
-    results: dict[str, dict] = {}
-
-    memory_context = await build_context_message(state.user_id, state.message)
-
-    current_datetime = datetime.now(timezone.utc).strftime("%A, %d %B %Y, %H:%M UTC")
-    date_context = (
-        f"The current date and time is {current_datetime}. Reason relative to this. "
-        "All World Cup 2026 venues are in North American time zones (roughly UTC-4 "
-        "to UTC-7), so near the UTC day boundary a venue's local date may be the "
-        "previous day — account for this when judging whether a match has already "
-        "been played. Distinguish matches already played from upcoming ones."
-    )
-    memory_context = (
-        f"{date_context}\n\n{memory_context}" if memory_context else date_context
-    )
-
-    async def run_with_timeout(agent_name: str) -> dict:
-        runner = AGENT_RUNNERS[agent_name]
-        try:
-            return await asyncio.wait_for(
-                runner(state.message, state.session_id, state.user_id, memory_context),
-                timeout=AGENT_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            return {
-                "result": f"{AGENT_DISPLAY_NAMES[agent_name]} timed out after {AGENT_TIMEOUT_SECONDS}s.",
-                "sources": [],
-                "confidence": "low",
-                "error": "timeout",
-                "fallbacks_used": [],
-            }
-        except Exception as e:
-            return {
-                "result": f"{AGENT_DISPLAY_NAMES[agent_name]} encountered an error: {str(e)}",
-                "sources": [],
-                "confidence": "low",
-                "error": str(e),
-                "fallbacks_used": [],
-            }
-
-    all_results = await asyncio.gather(
-        *[run_with_timeout(a) for a in state.agents]
-    )
-    for agent_name, result in zip(state.agents, all_results):
-        results[agent_name] = result
-
-    await extract_and_save(state.user_id, state.message)
-
-    agents_used = [a for a, r in results.items() if not r.get("error")]
-
-    return state.model_copy(update={
-        "memory_context": memory_context,
-        "agent_results": results,
-        "agents_used": agents_used,
-    })
-
-
-async def synthesize_node(state: OrchestratorState) -> OrchestratorState:
-    """Synthesize agent outputs into a single coherent response."""
-    try:
-        agent_outputs_parts = []
-        for agent_name, result in state.agent_results.items():
-            display = AGENT_DISPLAY_NAMES[agent_name]
-            content = result.get("result", "No output.")
-            agent_outputs_parts.append(f"=== {display} ===\n{content}")
-        agent_outputs = "\n\n".join(agent_outputs_parts)
-
-        if len(state.agent_results) == 1:
-            only_result = next(iter(state.agent_results.values()))
-            return state.model_copy(update={"response": only_result["result"]})
-
-        llm = get_synthesis_llm()
-        prompt = SYNTHESIS_PROMPT.format(
-            message=state.message,
-            agent_outputs=agent_outputs,
-        )
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        return state.model_copy(update={"response": response.content.strip()})
-
-    except Exception as e:
-        fallback = "\n\n".join(
-            f"**{AGENT_DISPLAY_NAMES[a]}**\n{r['result']}"
-            for a, r in state.agent_results.items()
-        )
-        return state.model_copy(update={
-            "response": fallback,
-            "error": f"Synthesis failed ({e}), showing raw agent outputs.",
-        })
-
-
-# ── Graph ─────────────────────────────────────────────────────────────────────
-def _build_graph() -> StateGraph:
-    graph = StateGraph(OrchestratorState)
-    graph.add_node("classify", classify_node)
-    graph.add_node("dispatch", dispatch_node)
-    graph.add_node("synthesize", synthesize_node)
-    graph.set_entry_point("classify")
-    graph.add_edge("classify", "dispatch")
-    graph.add_edge("dispatch", "synthesize")
-    graph.add_edge("synthesize", END)
-    return graph.compile()
-
-_graph = _build_graph()
-
-
-# ── Public API ────────────────────────────────────────────────────────────────
 async def run_orchestrator(
     message: str,
     session_id: str,
     user_id: str = "default",
 ) -> dict:
-    """Entry point for the orchestrator — called by /chat."""
+    """Entry point for /chat."""
     try:
-        initial_state = OrchestratorState(
-            message=message,
-            session_id=session_id,
-            user_id=user_id,
+        # Lazy import — keeps mem0/HuggingFace/Qdrant from initializing at
+        # module load time, which caused a 102-second hang when tests imported
+        # this module.
+        from memory.memory_manager import build_context_message, extract_and_save
+
+        memory_context = await build_context_message(user_id, message)
+        memory_context = (
+            f"{date_context()}\n\n{memory_context}" if memory_context else date_context()
         )
-        final_state = await _graph.ainvoke(initial_state)
-        response_text = final_state.get("response", "")
+
+        response_text = await asyncio.wait_for(
+            run_campo(message, session_id, memory_context),
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
+
+        # Long-term memory extraction is pre-filtered on personal signals and
+        # non-fatal on failure (see memory_manager).
+        await extract_and_save(user_id, message)
 
         if response_text:
             try:
@@ -264,15 +47,54 @@ async def run_orchestrator(
 
         return {
             "response": response_text,
-            "agents_used": final_state.get("agents_used", []),
-            "error": final_state.get("error"),
-            "agent_results": final_state.get("agent_results", {}),
+            "agents_used": ["campo"],
+            "error": None,
         }
 
+    except asyncio.TimeoutError:
+        return {
+            "response": f"Campo timed out after {AGENT_TIMEOUT_SECONDS}s — try again in a moment.",
+            "agents_used": [],
+            "error": "timeout",
+        }
     except Exception as e:
         return {
-            "response": f"Orchestrator encountered an unexpected error: {str(e)}",
+            "response": f"Campo encountered an unexpected error: {str(e)}",
             "agents_used": [],
             "error": str(e),
-            "agent_results": {},
         }
+
+
+async def stream_orchestrator(
+    message: str,
+    session_id: str,
+    user_id: str = "default",
+):
+    """Streaming twin of run_orchestrator — yields answer chunks as the agent
+    writes them, then does the same per-request bookkeeping (memory
+    extraction, one history write per exchange) once the answer is complete.
+
+    Raises on failure — the endpoint turns that into an SSE error event.
+    """
+    from memory.memory_manager import build_context_message, extract_and_save
+
+    memory_context = await build_context_message(user_id, message)
+    memory_context = (
+        f"{date_context()}\n\n{memory_context}" if memory_context else date_context()
+    )
+
+    parts: list[str] = []
+    async for token in stream_campo(message, session_id, memory_context):
+        parts.append(token)
+        yield token
+
+    response_text = "".join(parts)
+
+    await extract_and_save(user_id, message)
+
+    if response_text:
+        try:
+            await add_turn(session_id, "user", message)
+            await add_turn(session_id, "assistant", response_text)
+        except Exception as e:
+            print(f"History persistence failed (non-fatal): {e}")

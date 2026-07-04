@@ -1,14 +1,16 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import asyncio
+import json
 import os
 import time
 
-from agents.orchestrator import run_orchestrator
+from agents.orchestrator import run_orchestrator, stream_orchestrator
 
 load_dotenv()
 
@@ -138,6 +140,8 @@ class TodayDataResponse(BaseModel):
     recent_matches: list[MatchOut]
     standings: list[StandingsGroupOut]
     as_of: str
+    # Which competition this deployment serves (drives the UI brand tag).
+    competition: str
     errors: dict[str, str] | None = None
 
 class StandingsDataResponse(BaseModel):
@@ -167,78 +171,35 @@ async def chat(request: ChatRequest):
         latency_ms=latency,
     )
 
-@app.get("/today")
-async def today():
-    """Deterministic data endpoint for the Today screen.
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Streaming variant of /chat — Server-Sent Events.
 
-    Calls the football-data tool functions directly — NO LLM, NO agent,
-    NO orchestrator. Just a structured JSON pass-through of the tools' output.
-
-    NOTE: get_wc_matches / get_wc_standings are LangChain @tool objects that
-    return preformatted strings, so this returns the documented `*_text`
-    fallback shape rather than structured `matches: [...]` / `standings: [...]`
-    arrays. See the report for what a structured variant would require.
+    Emits `{"type": "token", "text": ...}` per model chunk, then
+    `{"type": "done", "latency_ms": ...}`; failures become a single
+    `{"type": "error", "message": ...}` event rather than a broken stream.
     """
-    # Lazy import to avoid paying the tools' import cost at app startup.
-    from tools.football_data import get_wc_matches, get_wc_standings
+    user_id = request.user_id or request.session_id
 
-    errors: dict[str, str] = {}
-    upcoming_text = None
-    recent_text = None
-    standings_text = None
+    async def event_stream():
+        start = time.time()
+        try:
+            async for token in stream_orchestrator(
+                message=request.message,
+                session_id=request.session_id,
+                user_id=user_id,
+            ):
+                yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
+            latency = int((time.time() - start) * 1000)
+            yield f"data: {json.dumps({'type': 'done', 'latency_ms': latency})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    # The tools use blocking `requests` under the hood — run them in worker
-    # threads so a slow upstream call can't stall the event loop.
-    # Upcoming fixtures.
-    try:
-        upcoming_text = await asyncio.to_thread(get_wc_matches.invoke, {"status": "SCHEDULED"})
-    except Exception as e:
-        errors["upcoming_matches"] = str(e)
-
-    # Recent / completed results.
-    try:
-        recent_text = await asyncio.to_thread(get_wc_matches.invoke, {"status": "FINISHED"})
-    except Exception as e:
-        errors["recent_matches"] = str(e)
-
-    # Group standings.
-    try:
-        standings_text = await asyncio.to_thread(get_wc_standings.invoke, {})
-    except Exception as e:
-        errors["standings"] = str(e)
-
-    response: dict = {
-        "matches_text": upcoming_text,
-        "recent_matches_text": recent_text,
-        "standings_text": standings_text,
-        "as_of": datetime.now(timezone.utc).isoformat(),
-    }
-    if errors:
-        # Partial success: return whatever succeeded and note what failed.
-        response["errors"] = errors
-    return response
-
-
-@app.get("/standings")
-async def standings():
-    """Deterministic data endpoint for group standings.
-
-    Calls get_wc_standings() directly — NO LLM, NO agent, NO orchestrator.
-    The tool returns a preformatted string, so this passes it through as
-    `standings_text`.
-    """
-    from tools.football_data import get_wc_standings
-
-    response: dict = {
-        "standings_text": None,
-        "as_of": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        # Blocking `requests` call — keep it off the event loop.
-        response["standings_text"] = await asyncio.to_thread(get_wc_standings.invoke, {})
-    except Exception as e:
-        response["error"] = str(e)
-    return response
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/today-data", response_model=TodayDataResponse)
@@ -284,11 +245,14 @@ async def today_data():
     # may be served from cache); report the oldest dataset's stamp.
     as_of = min(fetched_ats) if fetched_ats else datetime.now(timezone.utc).isoformat()
 
+    from tools.competitions import ACTIVE
+
     return TodayDataResponse(
         matches=upcoming,
         recent_matches=recent,
         standings=groups,
         as_of=as_of,
+        competition=ACTIVE.label,
         errors=errors or None,
     )
 
