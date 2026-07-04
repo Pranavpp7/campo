@@ -1,4 +1,5 @@
 import asyncio
+import time
 from pydantic import BaseModel, Field
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import ToolMessage
@@ -37,6 +38,9 @@ class ResearchResult(BaseModel):
         description="Raw tool outputs — the corpus the verifier checks claims against",
     )
     error: str | None = None
+    # Observability — stored in the brief record's lane_metrics.
+    duration_seconds: float = 0.0
+    tool_calls: int = 0
 
 
 _agent = None
@@ -59,30 +63,39 @@ async def run_research(task, date_context: str) -> ResearchResult:
     """Run one research lane. Never raises — a failed lane returns an error
     result so the brief can still ship with that section marked unavailable.
     """
+    start = time.time()
     try:
         agent = await _get_agent()
         messages = [
             {"role": "system", "content": date_context},
             {"role": "user", "content": task.instructions},
         ]
-        result = await agent.ainvoke({"messages": messages})
+        result = await agent.ainvoke(
+            {"messages": messages},
+            config={"run_name": f"brief-lane-{task.lane_id}"},
+        )
 
         findings = result["messages"][-1].content
 
         # Evidence = what the tools actually returned, straight from the
         # transcript. The verifier checks the brief against this, not against
         # whatever the model *says* its sources were.
-        evidence = [
-            str(m.content)[:MAX_EVIDENCE_ITEM_CHARS]
-            for m in result["messages"]
-            if isinstance(m, ToolMessage) and m.content
+        tool_messages = [
+            m for m in result["messages"] if isinstance(m, ToolMessage) and m.content
         ]
+        evidence = [str(m.content)[:MAX_EVIDENCE_ITEM_CHARS] for m in tool_messages]
 
         return ResearchResult(
             lane_id=task.lane_id,
             findings=findings,
             evidence=evidence,
+            duration_seconds=round(time.time() - start, 1),
+            tool_calls=len(tool_messages),
         )
 
     except Exception as e:
-        return ResearchResult(lane_id=task.lane_id, error=str(e))
+        return ResearchResult(
+            lane_id=task.lane_id,
+            error=str(e),
+            duration_seconds=round(time.time() - start, 1),
+        )

@@ -3,6 +3,7 @@ import time
 import asyncio
 from datetime import datetime, timezone
 
+from tools.competitions import date_context
 from tools.football_data import get_match_data
 from briefs.planner import plan_research
 from briefs.researcher import run_research, ResearchResult
@@ -30,16 +31,6 @@ def _is_rate_limited(error: str | None) -> bool:
     return "429" in lowered or "rate" in lowered
 
 
-def _date_context() -> str:
-    current_datetime = datetime.now(timezone.utc).strftime("%A, %d %B %Y, %H:%M UTC")
-    return (
-        f"The current date and time is {current_datetime}. Reason relative to this. "
-        "All World Cup 2026 venues are in North American time zones (roughly UTC-4 "
-        "to UTC-7), so near the UTC day boundary a venue's local date may be the "
-        "previous day. Distinguish matches already played from upcoming ones."
-    )
-
-
 async def generate_brief(match_id: int) -> dict:
     """Run the full pipeline for one match and return the brief record.
 
@@ -52,14 +43,14 @@ async def generate_brief(match_id: int) -> dict:
     match, _ = await asyncio.to_thread(get_match_data, match_id)
 
     tasks = plan_research(match)
-    date_context = _date_context()
+    date_ctx = date_context()
     semaphore = asyncio.Semaphore(WORKER_CONCURRENCY)
 
     async def run_lane(task):
         async with semaphore:
             try:
                 return await asyncio.wait_for(
-                    run_research(task, date_context),
+                    run_research(task, date_ctx),
                     timeout=LANE_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
@@ -91,8 +82,15 @@ async def generate_brief(match_id: int) -> dict:
         if r.error:
             print(f"[brief {match_id}] lane {r.lane_id} failed: {r.error[:300]}")
 
+    research_seconds = round(time.time() - start, 1)
+
+    write_start = time.time()
     draft = await write_brief(match, results)
+    write_seconds = round(time.time() - write_start, 1)
+
+    verify_start = time.time()
     verification = await verify_brief(draft, results)
+    verify_seconds = round(time.time() - verify_start, 1)
 
     return {
         "match_id": match_id,
@@ -108,6 +106,20 @@ async def generate_brief(match_id: int) -> dict:
         "lanes_failed": [r.lane_id for r in results if r.error],
         # Full error strings stay server-side friendly but debuggable.
         "lane_errors": {r.lane_id: r.error for r in results if r.error},
+        # Observability: where the time went and how hard each lane worked.
+        "lane_metrics": {
+            r.lane_id: {
+                "duration_seconds": r.duration_seconds,
+                "tool_calls": r.tool_calls,
+                "evidence_items": len(r.evidence),
+            }
+            for r in results
+        },
+        "stage_seconds": {
+            "research": research_seconds,
+            "write": write_seconds,
+            "verify": verify_seconds,
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "generation_seconds": round(time.time() - start, 1),
     }

@@ -121,7 +121,12 @@ Do this:
 Respond with JSON only, no other text, in exactly this shape:
 {{
   "claims": [
-    {{"claim": "<the claim>", "verdict": "supported" | "unsupported", "note": "<one short sentence>"}}
+    {{
+      "claim": "<the claim>",
+      "verdict": "supported" | "unsupported",
+      "note": "<one short sentence>",
+      "evidence_quote": "<for supported claims: the shortest verbatim snippet of the evidence that supports it; for unsupported claims: empty string>"
+    }}
   ],
   "revised_brief": "<the full revised markdown brief>"
 }}

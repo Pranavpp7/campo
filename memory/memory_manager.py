@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-from mem0 import AsyncMemory
 
 load_dotenv()
 
@@ -43,7 +42,19 @@ MEM0_CONFIG = {
     "history_db_path": os.path.join(os.path.dirname(__file__), "mem0_history.db"),
 }
 
-memory = AsyncMemory.from_config(MEM0_CONFIG)
+# Lazy singleton — creating AsyncMemory loads the sentence-transformers
+# embedder and touches Qdrant, which is seconds of work and a hard service
+# dependency. Importing this module (e.g. for the pure _has_personal_signal
+# pre-filter in tests/CI) must stay free.
+_memory = None
+
+
+def _get_memory():
+    global _memory
+    if _memory is None:
+        from mem0 import AsyncMemory
+        _memory = AsyncMemory.from_config(MEM0_CONFIG)
+    return _memory
 
 # ── Extraction ─────────────────────────────────────────────────────────────────
 
@@ -69,7 +80,7 @@ async def extract_and_save(user_id: str, message: str):
         return
 
     try:
-        await memory.add(message, user_id=user_id)
+        await _get_memory().add(message, user_id=user_id)
     except Exception as e:
         # Memory extraction failing should never crash the main flow
         print(f"Memory extraction error (non-fatal): {e}")
@@ -78,7 +89,7 @@ async def extract_and_save(user_id: str, message: str):
 
 async def load_memories(user_id: str, query: str) -> str:
     try:
-        result = await memory.search(
+        result = await _get_memory().search(
             query=query,
             filters={"user_id": user_id},
             top_k=5,

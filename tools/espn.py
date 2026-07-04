@@ -3,10 +3,20 @@ import requests
 from langchain_core.tools import tool
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
+from tools.competitions import ACTIVE
+
 # ── Config ────────────────────────────────────────────────────────────────────
-# ESPN's unofficial API 
+# ESPN's unofficial API
 BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/soccer"
-WC_LEAGUE = "fifa.world"
+# League slug comes from the competition registry (fifa.world, eng.1, ...).
+# None means ESPN coverage is disabled for this competition — the tools
+# return an honest "not available" instead of querying the wrong league.
+WC_LEAGUE = ACTIVE.espn_slug
+
+_NO_ESPN = (
+    f"ESPN coverage is not configured for the {ACTIVE.label} — "
+    "use the other data tools or web_search instead."
+)
 
 # ── TTL Cache ─────────────────────────────────────────────────────────────────
 _cache: dict = {}
@@ -48,7 +58,7 @@ def _api_get(endpoint: str, params: dict = {}) -> dict:
 
 @tool
 def get_live_scores() -> str:
-    """Get current live and recent World Cup 2026 scores from ESPN.
+    """Get current live and recent scores for the competition from ESPN.
 
     Use this for:
     - Live match scores and current game state
@@ -58,6 +68,8 @@ def get_live_scores() -> str:
     Returns:
         Live scores, match status, and scorers.
     """
+    if WC_LEAGUE is None:
+        return _NO_ESPN
     cache_key = "espn_live_scores"
     cached = _get_cached(cache_key)
     if cached:
@@ -98,7 +110,7 @@ def get_live_scores() -> str:
 
 @tool
 def get_match_summary(event_id: str) -> str:
-    """Get detailed summary of a specific World Cup match from ESPN.
+    """Get detailed summary of a specific match from ESPN.
 
     Use this after get_live_scores to get deeper details on a specific match
     including scorers, cards, and key events.
@@ -109,6 +121,8 @@ def get_match_summary(event_id: str) -> str:
     Returns:
         Match summary with scorers, cards, possession stats.
     """
+    if WC_LEAGUE is None:
+        return _NO_ESPN
     cache_key = f"espn_summary_{event_id}"
     cached = _get_cached(cache_key)
     if cached:
@@ -152,17 +166,19 @@ def get_match_summary(event_id: str) -> str:
 
 @tool
 def get_team_news(team_name: str) -> str:
-    """Get latest ESPN news for a World Cup team.
+    """Get latest ESPN news for a team in the competition.
 
     Use this to find recent injury reports, press conference quotes,
-    and team news that might affect match predictions.
+    and team news that might affect match analysis.
 
     Args:
-        team_name: Country name (e.g. "France", "Brazil", "USA")
+        team_name: Team name (e.g. "France", "Brazil", "Arsenal")
 
     Returns:
         Latest news headlines and summaries for the team.
     """
+    if WC_LEAGUE is None:
+        return _NO_ESPN
     cache_key = f"espn_news_{team_name.lower()}"
     cached = _get_cached(cache_key)
     if cached:

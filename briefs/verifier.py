@@ -52,13 +52,14 @@ async def verify_brief(draft: str, results: list) -> dict:
 
         prompt = VERIFIER_PROMPT.format(draft=draft, evidence=evidence)
         llm = get_llm()
+        config = {"run_name": "brief-verifier"}
         try:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke([HumanMessage(content=prompt)], config=config)
         except Exception as e:
             if "429" not in str(e) and "rate" not in str(e).lower():
                 raise
             await asyncio.sleep(RATE_LIMIT_RETRY_DELAY_SECONDS)
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke([HumanMessage(content=prompt)], config=config)
 
         parsed = json.loads(_strip_json_fences(response.content))
         revised = parsed.get("revised_brief") or draft
@@ -67,6 +68,9 @@ async def verify_brief(draft: str, results: list) -> dict:
                 "claim": c.get("claim", ""),
                 "verdict": c.get("verdict", "unsupported"),
                 "note": c.get("note", ""),
+                # The verbatim evidence snippet backing a supported verdict —
+                # what makes the FACT-CHECKED badge auditable in the UI.
+                "evidence_quote": c.get("evidence_quote", ""),
             }
             for c in parsed.get("claims", [])
             if isinstance(c, dict) and c.get("claim")

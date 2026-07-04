@@ -2,7 +2,7 @@ import time
 import requests
 from langchain_core.tools import tool
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from tools.venues import VENUES
+from tools.geo import resolve_city
 
 # ── TTL Cache ─────────────────────────────────────────────────────────────────
 _cache: dict = {}
@@ -56,14 +56,14 @@ WEATHER_CODES = {
 
 @tool
 def get_venue_weather(city: str, date: str) -> str:
-    """Get weather forecast for a World Cup 2026 venue on a specific date.
+    """Get the weather forecast for a match city on a specific date.
 
-    Use this for Logistics planning (what to pack, travel conditions)
-    and LocalPulse analysis (outdoor vs indoor considerations for businesses).
+    Use this for match-day conditions (heat, rain, wind) and travel planning
+    (what to pack). Works for any city — it is resolved by name.
 
     Args:
-        city: Host city name (e.g. "houston", "dallas", "miami", "toronto")
-        date: Date in YYYY-MM-DD format (e.g. "2026-06-15")
+        city: City name (e.g. "Houston", "Manchester", "Toronto")
+        date: Date in YYYY-MM-DD format (e.g. "2026-07-14")
 
     Returns:
         Weather forecast including temperature, precipitation, and conditions.
@@ -73,10 +73,12 @@ def get_venue_weather(city: str, date: str) -> str:
     if cached:
         return cached
 
-    venue = VENUES.get(city.lower())
+    try:
+        venue = resolve_city(city)
+    except Exception as e:
+        return f"Could not resolve city '{city}': {e}"
     if not venue:
-        available = ", ".join(VENUES.keys())
-        return f"City '{city}' not found. Available venues: {available}"
+        return f"City '{city}' not found — check the spelling or try the nearest major city."
 
     try:
         data = _get_weather(venue["lat"], venue["lon"], date)

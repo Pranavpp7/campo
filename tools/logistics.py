@@ -1,6 +1,6 @@
 import math
 from langchain_core.tools import tool
-from tools.venues import VENUES
+from tools.geo import resolve_city
 
 EARTH_RADIUS_KM = 6371.0
 
@@ -12,31 +12,36 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 @tool
-def calculate_venue_distance(venue_a: str, venue_b: str) -> str:
-    """Calculate the distance between two World Cup 2026 venues and assess
-    whether same-day travel between them is realistic.
+def calculate_venue_distance(city_a: str, city_b: str) -> str:
+    """Calculate the distance between two match cities and assess whether
+    same-day travel between them is realistic.
 
     Use this for multi-match itinerary planning — checking whether a fan
-    can realistically attend matches at two different venues close together
-    in time.
+    can realistically attend matches in two different cities close together
+    in time. Works for any city — both are resolved by name.
 
     Args:
-        venue_a: Host city name (e.g. "dallas", "houston")
-        venue_b: Host city name (e.g. "atlanta")
+        city_a: City name (e.g. "Dallas", "Manchester")
+        city_b: City name (e.g. "Atlanta", "London")
 
     Returns:
         Distance in km/miles and a same-day travel feasibility assessment.
     """
-    a = VENUES.get(venue_a.lower())
-    b = VENUES.get(venue_b.lower())
+    try:
+        a = resolve_city(city_a)
+        b = resolve_city(city_b)
+    except Exception as e:
+        return f"Could not resolve cities: {e}"
 
-    if not a or not b:
-        available = ", ".join(VENUES.keys())
-        missing = [v for v, found in [(venue_a, a), (venue_b, b)] if not found]
-        return f"Venue(s) not found: {', '.join(missing)}. Available venues: {available}"
+    missing = [name for name, found in [(city_a, a), (city_b, b)] if not found]
+    if missing:
+        return (
+            f"City name(s) not found: {', '.join(missing)}. "
+            "Check the spelling or try the nearest major city."
+        )
 
-    if venue_a.lower() == venue_b.lower():
-        return f"{a['name']} and {b['name']} are the same venue."
+    if a["name"].lower() == b["name"].lower():
+        return f"{a['name']} and {b['name']} are the same city."
 
     distance_km = _haversine_km(a["lat"], a["lon"], b["lat"], b["lon"])
     distance_miles = distance_km * 0.621371

@@ -9,19 +9,16 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
+from tools.competitions import ACTIVE, ACTIVE_TZ
+
 API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
 BASE_URL = "https://api.football-data.org/v4"
 HEADERS = {"X-Auth-Token": API_KEY}
-# Competition to serve. Defaults to the 2026 FIFA World Cup; point it at any
-# football-data.org competition code (PL, CL, ...) to reuse Campo for another
-# tournament or league season.
-WC_CODE = os.getenv("COMPETITION_CODE", "WC")
-
-# Reference timezone for what counts as "today". Venues span UTC-4 (East
-# Coast) to UTC-7 (Pacific); UTC-5 (central) is the compromise that keeps an
-# evening kickoff on the correct fan-facing day even though its utcDate has
-# already rolled over to tomorrow.
-TOURNAMENT_TZ = timezone(timedelta(hours=-5))
+# Which competition to serve, and the reference timezone for what counts as
+# "today" — both come from the competition registry. Function names keep the
+# historical wc_ prefix; they work for any football-data.org competition.
+WC_CODE = ACTIVE.code
+TOURNAMENT_TZ = ACTIVE_TZ
 
 # ── TTL Cache ─────────────────────────────────────────────────────────────────
 _cache: dict = {}
@@ -80,7 +77,7 @@ def _api_get(endpoint: str, params: dict = {}) -> dict:
 
 @tool
 def get_wc_matches(status: str = "SCHEDULED") -> str:
-    """Get 2026 FIFA World Cup matches filtered by status.
+    """Get matches for the competition Campo covers, filtered by status.
 
     Use this to find upcoming matches, live scores, or completed results.
 
@@ -105,7 +102,7 @@ def get_wc_matches(status: str = "SCHEDULED") -> str:
         if not matches:
             # Cache the empty result too — otherwise every call during a
             # matchless period hits the rate-limited API.
-            output = f"No {status} matches found for the 2026 World Cup."
+            output = f"No {status} matches found for the {ACTIVE.label}."
             _set_cached(cache_key, output, TTL_MATCHES)
             return output
 
@@ -135,13 +132,13 @@ def get_wc_matches(status: str = "SCHEDULED") -> str:
 
 @tool
 def get_team_squad(team_name: str) -> str:
-    """Get the full squad for a World Cup 2026 team including player positions.
+    """Get the full squad for a team in the competition, including positions.
 
     Use this to check who is in a team's squad before asking about specific players.
     Useful for injury context — if a player isn't listed they may be injured or excluded.
 
     Args:
-        team_name: Country name (e.g. "France", "Brazil", "United States")
+        team_name: Team name (e.g. "France", "Brazil", "Arsenal")
 
     Returns:
         Full squad with player names, positions and dates of birth.
@@ -190,13 +187,13 @@ def get_team_squad(team_name: str) -> str:
 
 @tool
 def get_wc_standings() -> str:
-    """Get the current 2026 FIFA World Cup group stage standings.
+    """Get the current standings for the competition (group tables or league table).
 
-    Use this to understand which teams are advancing, their points,
-    goal difference, and current group position.
+    Use this to understand which teams are advancing or leading, their points,
+    goal difference, and current position.
 
     Returns:
-        Group standings table with points, wins, draws, losses and goal difference.
+        Standings table(s) with points, wins, draws, losses and goal difference.
     """
     cache_key = "wc_standings"
     cached = _get_cached(cache_key)

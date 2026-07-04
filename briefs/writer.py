@@ -37,5 +37,8 @@ async def write_brief(match: dict, results: list) -> str:
         findings=_format_findings(results),
     )
     llm = get_llm()
-    response = await llm.ainvoke([HumanMessage(content=prompt)])
+    response = await llm.ainvoke(
+        [HumanMessage(content=prompt)],
+        config={"run_name": "brief-writer"},
+    )
     return response.content.strip()
