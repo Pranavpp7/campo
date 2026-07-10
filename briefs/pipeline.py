@@ -9,7 +9,7 @@ from briefs.planner import plan_research
 from briefs.researcher import run_research, ResearchResult
 from briefs.writer import write_brief
 from briefs.verifier import verify_brief
-from briefs.store import save_brief, release_generation_lock
+from briefs.store import get_brief, save_brief, release_generation_lock
 
 # Orchestrated as a plain async function rather than a LangGraph StateGraph:
 # the pipeline is linear with one fan-out (plan -> gather(workers) -> write ->
@@ -137,12 +137,18 @@ async def generate_and_store(match_id: int):
     except Exception as e:
         print(f"Brief generation failed for match {match_id}: {e}")
         try:
-            await save_brief(match_id, {
-                "match_id": match_id,
-                "status": "failed",
-                "error": str(e),
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-            })
+            # A failed near-kickoff refresh must not clobber the ready brief
+            # it was refreshing — keep serving the aging-but-good one.
+            existing = await get_brief(match_id)
+            if existing and existing.get("status") == "ready":
+                print(f"[brief {match_id}] keeping existing ready brief after failed run")
+            else:
+                await save_brief(match_id, {
+                    "match_id": match_id,
+                    "status": "failed",
+                    "error": str(e),
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                })
         except Exception as save_err:
             print(f"Could not persist failed-brief record for {match_id}: {save_err}")
     finally:

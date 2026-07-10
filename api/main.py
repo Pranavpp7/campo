@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 import asyncio
 import json
 import os
@@ -25,10 +28,16 @@ BRIEF_SCAN_INTERVAL_MINUTES = 30
 async def auto_generate_briefs():
     """Scan today's fixtures and generate any missing briefs, one at a time —
     each brief already runs 4 parallel workers, so parallelism across matches
-    would just trip free-tier LLM rate limits."""
+    would just trip free-tier LLM rate limits.
+
+    A ready brief isn't necessarily done: inside the last
+    BRIEF_REFRESH_WINDOW_MINUTES before kickoff it gets regenerated once
+    (see briefs.refresh), picking up confirmed lineups and late team news.
+    """
     from tools.football_data import get_wc_today_matches_data
     from briefs.store import get_brief, try_acquire_generation_lock
     from briefs.pipeline import generate_and_store
+    from briefs.refresh import should_refresh
 
     try:
         matches, _ = await asyncio.to_thread(get_wc_today_matches_data)
@@ -41,13 +50,15 @@ async def auto_generate_briefs():
         if match_id is None or m.get("status") == "FINISHED":
             continue
         record = await get_brief(match_id)
-        if record and record.get("status") == "ready":
+        refreshing = record is not None and record.get("status") == "ready"
+        if refreshing and not should_refresh(record):
             continue
         if not await try_acquire_generation_lock(match_id):
             continue  # another worker (or a manual trigger) is already on it
         home = (m.get("home") or {}).get("name")
         away = (m.get("away") or {}).get("name")
-        print(f"[briefs-scheduler] generating brief for {home} vs {away} ({match_id})")
+        action = "refreshing near-kickoff" if refreshing else "generating"
+        print(f"[briefs-scheduler] {action} brief for {home} vs {away} ({match_id})")
         await generate_and_store(match_id)
 
 
@@ -76,12 +87,24 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Campo API", version="1.0.0", lifespan=lifespan)
 
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Per-client-IP limits on the endpoints that burn LLM quota. Data reads
+# (/today-data, /briefs/{id}) stay unlimited — they're cached and cheap.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # ── CORS ─────────────────────────────────────────────────────────────────────
 # Browsers treat localhost and 127.0.0.1 as distinct origins, so allow both —
 # the dev frontend may be opened under either hostname on port 3000.
+# In production, set ALLOWED_ORIGINS to a comma-separated list (e.g. the
+# deployed frontend's https origin).
 ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    o.strip()
+    for o in os.getenv(
+        "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if o.strip()
 ]
 
 app.add_middleware(
@@ -151,14 +174,15 @@ class StandingsDataResponse(BaseModel):
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat(payload: ChatRequest, request: Request):
     start = time.time()
 
-    user_id = request.user_id or request.session_id
+    user_id = payload.user_id or payload.session_id
 
     result = await run_orchestrator(
-        message=request.message,
-        session_id=request.session_id,
+        message=payload.message,
+        session_id=payload.session_id,
         user_id=user_id,
     )
 
@@ -172,21 +196,22 @@ async def chat(request: ChatRequest):
     )
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+@limiter.limit("10/minute")
+async def chat_stream(payload: ChatRequest, request: Request):
     """Streaming variant of /chat — Server-Sent Events.
 
     Emits `{"type": "token", "text": ...}` per model chunk, then
     `{"type": "done", "latency_ms": ...}`; failures become a single
     `{"type": "error", "message": ...}` event rather than a broken stream.
     """
-    user_id = request.user_id or request.session_id
+    user_id = payload.user_id or payload.session_id
 
     async def event_stream():
         start = time.time()
         try:
             async for token in stream_orchestrator(
-                message=request.message,
-                session_id=request.session_id,
+                message=payload.message,
+                session_id=payload.session_id,
                 user_id=user_id,
             ):
                 yield f"data: {json.dumps({'type': 'token', 'text': token})}\n\n"
@@ -325,7 +350,8 @@ async def get_match_brief(match_id: int):
 
 
 @app.post("/briefs/{match_id}/generate", status_code=202)
-async def trigger_brief_generation(match_id: int, force: bool = False):
+@limiter.limit("6/minute")
+async def trigger_brief_generation(request: Request, match_id: int, force: bool = False):
     """Kick off background generation for a match (idempotent).
 
     Returns the existing brief if one is ready and `force` is not set;

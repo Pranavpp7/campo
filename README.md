@@ -7,6 +7,8 @@
 
 I've followed football since I was a kid. When the 2026 World Cup came to North America, I built Campo: open it on match day and every fixture has a pre-match brief — form, availability, the matchup, conditions — researched by parallel agents and **fact-checked against the raw tool outputs before you see it**.
 
+![Campo Today screen — live Round of 16 slate](assets/today.png)
+
 ---
 
 ## What it does
@@ -15,32 +17,19 @@ I've followed football since I was a kid. When the 2026 World Cup came to North 
 
 **Match briefs** — for each match, a pipeline of agents researches four lanes in parallel, a writer composes the brief, and a verifier strikes any claim the collected evidence doesn't support. Briefs pre-generate in the background on a schedule, so fans open a finished brief instead of waiting on one.
 
+| The brief | The receipts |
+|---|---|
+| ![A generated match brief with the FACT-CHECKED badge](assets/brief.png) | ![Every claim checked, with the verifier's verdict and reasoning](assets/brief-claims.png) |
+
 **Ask Campo** — a chat agent with all the tools (fixtures, squads, standings, live scores, news, weather, venue distances, web search) that grounds its answers in the verified briefs when the question is about one of today's matches. Answers stream token-by-token over SSE.
+
+![Ask Campo, mid-stream](assets/chat-stream.png)
 
 ---
 
 ## Architecture
 
-```
-                    ┌──────────────── brief pipeline (briefs/) ────────────────┐
-                    │                                                          │
- match fixture ──▶  planner ──▶  4 research workers (parallel, isolated ctx)   │
-                    │  (deterministic)   home team · away team ·               │
-                    │                    matchup · conditions                  │
-                    │                        │  findings + raw tool outputs    │
-                    │                        ▼                                 │
-                    │                     writer ──▶ draft brief               │
-                    │                        │                                 │
-                    │                        ▼                                 │
-                    │                    verifier — checks every claim         │
-                    │                    against the raw tool outputs;         │
-                    │                    unsupported claims are struck         │
-                    └──────────────────────────┬───────────────────────────────┘
-                                               ▼
-                              Redis (brief per match id, 24h TTL)
-                                               ▼
-                       /briefs endpoints ──▶ Today screen match cards
-```
+![Campo architecture — planner, parallel research workers, writer, verifier](assets/architecture.svg)
 
 Every agent in the pipeline exists for a structural reason:
 
@@ -60,17 +49,17 @@ The **planner is deliberately deterministic** — a match brief always decompose
 
 ## Engineering decisions
 
-**Verification against evidence, not citations.** The verifier receives the raw tool outputs harvested from each worker's message transcript (`ToolMessage` contents), so a worker or writer hallucinating a source doesn't survive. Supported claims carry a verbatim evidence quote into the UI, making the FACT-CHECKED badge auditable claim-by-claim. Measured by a scored eval suite (`evals/unit/test_verifier.py`): 4 scenarios, 17 claims, 8 planted falsehoods across injuries, scores, conditions and history — **catch rate 8/8 (100%), false strikes 0/9 (0%)**.
+**Verification against evidence, not citations.** The verifier receives the raw tool outputs harvested from each worker's message transcript (`ToolMessage` contents), so a worker or writer hallucinating a source doesn't survive. Supported claims carry a verbatim evidence quote into the UI, making the FACT-CHECKED badge auditable claim-by-claim. Measured by a scored eval suite (`evals/unit/test_verifier.py`): 5 scenarios, 20 claims, 10 planted falsehoods across injuries, scores, conditions, history and stale-evidence support — **catch rate 10/10 (100%), false strikes 1/10** (one conservative strike on a claim needing an inference the evidence only implied).
 
 **Briefs never block, never wedge.** Generation is fire-and-forget behind a Redis `SET NX` lock with TTL; a crashed run self-heals. A failed lane degrades to an honest "unavailable" section instead of sinking the brief. A verifier failure ships the draft marked `UNVERIFIED` rather than losing it.
 
 **Free-tier rate limits are a design constraint.** One brief is 4 ReAct workers + writer + verifier. Observed in testing: 4-way worker bursts 429 on OpenRouter and Groq *simultaneously*. Mitigations: worker concurrency capped at 2 (`BRIEF_WORKER_CONCURRENCY`), one lane retry pass after a 45s cooldown, and a three-model fallback chain (OpenRouter gpt-oss-120b → Groq gpt-oss-120b → Groq llama-3.3-70b, which has the TPM headroom the others lack under tool-heavy loads).
 
-**Pre-generation makes latency irrelevant.** A brief takes ~1-5 minutes to research honestly. APScheduler scans today's fixtures every 30 minutes (`BRIEFS_AUTO_GENERATE=true`) and fills missing briefs sequentially, so the pipeline's latency is paid before any fan asks.
+**Pre-generation makes latency irrelevant.** A brief takes ~1-5 minutes to research honestly. APScheduler scans today's fixtures every 30 minutes (`BRIEFS_AUTO_GENERATE=true`) and fills missing briefs sequentially, so the pipeline's latency is paid before any fan asks. Pre-generated isn't frozen, either: inside the last 90 minutes before kickoff (`BRIEF_REFRESH_WINDOW_MINUTES`) a brief researched earlier is regenerated exactly once — the window where confirmed lineups drop — and a failed refresh keeps serving the previous ready brief instead of clobbering it. The UI shows every brief's research age ("researched 2h ago").
 
 **Structural fix for tool hallucination.** The agent LLM invented non-existent parameters against the raw Tavily MCP schema. Instead of patching prompts, the tool is wrapped in a minimal two-parameter function — invalid calls are structurally impossible.
 
-**Date-aware agents.** Every agent gets the current UTC date and the venue-timezone caveat in its system message; the pipeline and chat both distinguish played from upcoming matches.
+**Time-aware retrieval, freshness-aware verification.** Football data goes stale by the hour, and a relevance-ranked web index happily serves last season's squad as the top result. Campo counters this at every layer: every agent gets the current UTC date (plus the venue-timezone caveat) in its system message; `web_search` is recency-windowed (Tavily `time_range`, chosen per query — `"week"` for injuries and lineups, `"any"` only for evergreen facts like head-to-head history); every structured tool stamps its output with an *as of* fetch time; research bullets must carry source dates. The verifier closes the loop: given the current date, it issues a third verdict — **`stale`** — when a claim about the present is supported only by evidence from a past season or tournament. Stale-but-sourced is how misinformation ships; here it renders aged ("as of <date>") or not at all, never as a pass.
 
 **Observability built into the record.** Every brief stores per-lane metrics (duration, tool calls, evidence items) and stage timings (research / write / verify), and every LLM call carries a LangSmith run name (`brief-lane-conditions`, `brief-verifier`, `campo-chat`) so traces read like the architecture diagram.
 
@@ -82,7 +71,7 @@ The **planner is deliberately deterministic** — a match brief always decompose
 evals/
   unit/           planner decomposition (pure, deterministic)
                   verifier planted-false-claims suite — scored catch-rate
-                  metric (live LLM): 100% catch, 0% false strikes
+                  metric (live LLM): 100% catch, 10% false strikes
                   memory pre-filter (pure)
   integration/    Redis history correctness
   e2e/            chat quality + brief quality (DeepEval GEval, LLM-as-judge)
@@ -117,6 +106,21 @@ cd frontend && npm install && npm run dev      # frontend on :3000
 ```
 
 Open `http://localhost:3000`, hit a match card's **Match Brief** button — or set `BRIEFS_AUTO_GENERATE=true` and let the scheduler fill the slate.
+
+---
+
+## Deployment
+
+Everything runs on free tiers:
+
+| Piece | Where | Notes |
+|---|---|---|
+| Backend | Render free (Docker) | `Dockerfile` + `render.yaml` blueprint included; `/health` check, `$PORT` aware |
+| Redis | Upstash free | set `REDIS_URL` (rediss://) |
+| Qdrant | Qdrant Cloud free 1GB | set `QDRANT_HOST` / `QDRANT_PORT` |
+| Frontend | Vercel free | build `frontend/` with `VITE_API_BASE_URL` pointing at the backend; add that origin to `ALLOWED_ORIGINS` |
+
+The LLM-burning endpoints (`/chat`, `/chat/stream`, `/briefs/{id}/generate`) are rate-limited per client IP so a public deployment can't have its free-tier quota drained.
 
 ---
 

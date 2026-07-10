@@ -30,6 +30,20 @@ function formatGeneratedAt(iso?: string): string {
   })
 }
 
+/** Relative age of the research ("3h 12m ago") — a reader should see at a
+ * glance how current a brief is, not do timestamp math. */
+function formatAge(iso?: string): string {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const mins = Math.max(0, Math.floor((Date.now() - t) / 60_000))
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ${mins % 60}m ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
 /**
  * Slide-over panel showing a match's verified pre-match brief.
  *
@@ -183,10 +197,13 @@ export default function BriefPanel({ match, onClose }: Props) {
                   <span className="brief-panel__badge">UNVERIFIED DRAFT</span>
                 )}
                 {state.brief.generated_at && (
-                  <span className="brief-panel__stamp">
-                    {formatGeneratedAt(state.brief.generated_at)}
+                  <span
+                    className="brief-panel__stamp"
+                    title={formatGeneratedAt(state.brief.generated_at)}
+                  >
+                    researched {formatAge(state.brief.generated_at)}
                     {state.brief.generation_seconds != null &&
-                      ` · researched in ${Math.round(state.brief.generation_seconds)}s`}
+                      ` · took ${Math.round(state.brief.generation_seconds)}s`}
                   </span>
                 )}
               </div>
@@ -206,14 +223,15 @@ export default function BriefPanel({ match, onClose }: Props) {
                     {state.brief.claims!.map((c, i) => (
                       <li
                         key={i}
-                        className={
-                          c.verdict === 'supported'
-                            ? 'brief-claim brief-claim--supported'
-                            : 'brief-claim brief-claim--unsupported'
+                        className={`brief-claim brief-claim--${c.verdict}`}
+                        title={
+                          c.verdict === 'stale'
+                            ? 'Supported only by outdated evidence'
+                            : undefined
                         }
                       >
                         <span className="brief-claim__verdict">
-                          {c.verdict === 'supported' ? '✓' : '✗'}
+                          {c.verdict === 'supported' ? '✓' : c.verdict === 'stale' ? '⌛' : '✗'}
                         </span>
                         <span>
                           {c.claim}
